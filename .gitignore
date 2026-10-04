@@ -1,0 +1,15 @@
+/target/
+/dist/
+/.codex/
+/.mcp.json
+.DS_Store
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.sqlite3*
+*.db
+*.db-*
+*.mcp-sessions/
+*.assets/

@@ -1,0 +1,40 @@
+[package]
+name = "empire-ui"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Biblioteca de componentes de UI para apps desktop em GPUI — controles, design tokens e ícones."
+
+# ⚠️ INVARIANTE DESTE CRATE: as dependências abaixo são as ÚNICAS permitidas.
+# `empire-ui` é uma lib de componentes GENÉRICA — não pode depender de nenhum crate de
+# domínio (`pve-core`, `pve-render`, `pve-media`, …), senão deixa de ser reutilizável
+# fora deste repo. Se um componente precisa de um tipo de domínio, ele NÃO pertence aqui:
+# ou fica no `pve-ui`, ou o tipo entra como parâmetro genérico / trait.
+[dependencies]
+gpui = "=0.2.2"
+gpui-component = "=0.5.1"
+# Só pra persistir as cores recentes do `ColorPicker` (~/.config/<app>/recent_colors.json).
+serde_json = "1"
+
+# `test-support` liga o `TestAppContext`/`VisualTestContext` do gpui, que permite abrir uma janela
+# headless e SIMULAR eventos de mouse/teclado. É o que torna a seleção por múltiplos cliques
+# testável de verdade (e não só a função que decide o que selecionar).
+# --- macOS: a lupa do sistema pro conta-gotas do ColorPicker ---------------------------------
+#
+# Amostrar um pixel da tela exige a API do sistema (ver `crate::eyedropper`), e no macOS ela é o
+# `NSColorSampler` do AppKit. É a ÚNICA dependência de plataforma do crate, e é condicional: em
+# qualquer outro sistema `eyedropper::is_supported()` devolve `false` e o botão não é desenhado.
+#
+# As duas já vêm na árvore pelo próprio gpui, então isto não acrescenta compilação — só torna o
+# uso direto e explícito.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSColorSampler",
+    "NSColor",
+    "NSColorSpace",
+    "block2",
+] }
+
+[dev-dependencies]
+gpui = { version = "=0.2.2", features = ["test-support"] }
