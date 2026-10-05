@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sparkpad": {
+      "command": "/absolute/path/to/sparkpad/dist/Sparkpad.app/Contents/MacOS/sparkpad",
+      "args": ["mcp"]
+    }
+  }
+}
