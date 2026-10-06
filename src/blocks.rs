@@ -39,6 +39,19 @@ pub struct Block {
     pub before: String,
 }
 impl Block {
+    pub fn slice(&self, range: Range<usize>) -> Self {
+        let mut block = self.clone();
+        let a = self.text[..range.start].chars().count();
+        let z = self.text[..range.end].chars().count();
+        block.assign(self.chars()[a..z].to_vec());
+        block.id = Uuid::new_v4().to_string();
+        block
+    }
+    pub fn append_marked(&mut self, text: &str, marks: &Marks) {
+        let mut chars = self.chars();
+        chars.extend(text.chars().map(|ch| (ch, marks.clone())));
+        self.assign(chars);
+    }
     pub fn new(kind: Kind, text: String) -> Self {
         let len = text.len();
         Self {
@@ -220,6 +233,45 @@ pub struct Document {
     trailing: String,
 }
 impl Document {
+    pub fn from_blocks(mut blocks: Vec<Block>) -> Self {
+        if blocks.is_empty() { blocks.push(Block::new(Kind::Paragraph, String::new())); }
+        blocks[0].before.clear();
+        Self { blocks, trailing: String::new() }
+    }
+    pub fn fragment(&self, start: (usize, usize), end: (usize, usize)) -> Vec<Block> {
+        let (a, z) = if start <= end { (start, end) } else { (end, start) };
+        (a.0..=z.0).filter_map(|i| {
+            let block = &self.blocks[i];
+            let start = if i == a.0 { a.1 } else { 0 };
+            let end = if i == z.0 { z.1 } else { block.text.len() };
+            if a.0 != z.0 && ((i == a.0 && start == block.text.len()) || (i == z.0 && end == 0)) { None }
+            else { Some(block.slice(start..end)) }
+        }).collect()
+    }
+    /// Paste native blocks while preserving rich text on both sides of the selection.
+    pub fn replace_fragment(&mut self, start: (usize, usize), end: (usize, usize), mut fragment: Vec<Block>) -> (usize, usize) {
+        let (a, z) = if start <= end { (start, end) } else { (end, start) };
+        if fragment.is_empty() { return self.replace_selection(a, z, ""); }
+        let prefix = self.blocks[a.0].slice(0..a.1);
+        let suffix = self.blocks[z.0].slice(z.1..self.blocks[z.0].text.len());
+        let original_kind = self.blocks[a.0].kind.clone();
+        let before = self.blocks[a.0].before.clone();
+        for block in &mut fragment { block.id = Uuid::new_v4().to_string(); block.invalidate(); }
+        let merge_prefix = !prefix.text.is_empty() && matches!(fragment[0].kind, Kind::Paragraph);
+        let merge_suffix = !suffix.text.is_empty() && matches!(fragment.last().unwrap().kind, Kind::Paragraph);
+        if merge_prefix {
+            let mut chars = prefix.chars(); chars.extend(fragment[0].chars());
+            fragment[0].assign(chars); fragment[0].kind = original_kind;
+        } else if !prefix.text.is_empty() { fragment.insert(0, prefix); }
+        let caret = (a.0 + fragment.len() - 1, fragment.last().unwrap().text.len());
+        if merge_suffix {
+            let block = fragment.last_mut().unwrap();
+            let mut chars = block.chars(); chars.extend(suffix.chars()); block.assign(chars);
+        } else if !suffix.text.is_empty() { fragment.push(suffix); }
+        fragment[0].before = before;
+        self.blocks.splice(a.0..=z.0, fragment);
+        caret
+    }
     pub fn parse(source: &str) -> Self {
         let root = markdown::to_mdast(source, &ParseOptions::gfm()).ok();
         let mut nodes: Vec<(&Node, Kind)> = Vec::new();
@@ -340,7 +392,7 @@ impl Document {
         chars.extend_from_slice(&last[z..]);
         self.blocks[start.0].assign(chars);
         self.blocks.drain(start.0 + 1..end.0 + 1);
-        if self.blocks[start.0].text.is_empty() {
+        if self.blocks[start.0].text.is_empty() && !matches!(self.blocks[start.0].kind, Kind::Code(_)) {
             self.blocks[start.0].kind = Kind::Paragraph;
         }
         (start.0, start.1 + text.len())

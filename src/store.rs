@@ -78,7 +78,8 @@ impl Store {
             transaction.execute_batch("ALTER TABLE notes ADD COLUMN parent_id TEXT REFERENCES notes(id) ON DELETE RESTRICT;")?;
         }
         transaction.execute_batch("CREATE INDEX IF NOT EXISTS notes_parent ON notes(parent_id);")?;
-        transaction.execute_batch("CREATE TABLE IF NOT EXISTS note_presentation (
+        transaction.execute_batch("CREATE INDEX IF NOT EXISTS notes_parent_idx ON notes(parent_id);
+            CREATE TABLE IF NOT EXISTS note_presentation (
             note_id TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
             icon TEXT, cover TEXT);")?;
         transaction.execute_batch("CREATE TABLE IF NOT EXISTS sidebar_groups (
@@ -296,6 +297,39 @@ impl Store {
         }
         self.get(id)
     }
+    /// Delete a confirmed page subtree atomically, deepest children first.
+    pub fn delete_subtree(&self,id:&str,expected_revision:i64)->Result<()> {
+        let tx=rusqlite::Transaction::new_unchecked(&self.conn,rusqlite::TransactionBehavior::Immediate)?;
+        let revision:Option<i64>=tx.query_row("SELECT revision FROM notes WHERE id=?1",[id],|r|r.get(0)).optional()?;
+        if revision!=Some(expected_revision) {bail!("Note changed externally or was deleted (revision conflict)");}
+        let ids:Vec<String>=tx.prepare("WITH RECURSIVE descendants(id,depth) AS (SELECT id,0 FROM notes WHERE id=?1 UNION ALL SELECT n.id,d.depth+1 FROM notes n JOIN descendants d ON n.parent_id=d.id) SELECT id FROM descendants ORDER BY depth DESC")?.query_map([id],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for child in ids {tx.execute("DELETE FROM notes WHERE id=?1",[child])?;}
+        tx.commit()?;Ok(())
+    }
+    /// Move and position a page in one transaction; preserve the subtree and Markdown.
+    pub fn relocate_note(&self,id:&str,parent:Option<&str>,group:Option<&str>,anchor:Option<&str>,before:bool,expected_revision:i64)->Result<Note> {
+        if parent.is_some() && group.is_some() {bail!("Choose a parent or a group");}
+        let tx=rusqlite::Transaction::new_unchecked(&self.conn,rusqlite::TransactionBehavior::Immediate)?;
+        let current:Option<(Option<String>,i64,Option<String>)>=tx.query_row("SELECT n.parent_id,n.revision,m.group_id FROM notes n LEFT JOIN sidebar_membership m ON m.note_id=n.id WHERE n.id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let (old_parent,revision,old_group)=current.context("Note not found")?;
+        if revision!=expected_revision {bail!("Note changed externally (revision conflict)");}
+        let mut ancestor=parent.map(str::to_owned);
+        while let Some(next)=ancestor {
+            if next==id {bail!("A note cannot be moved into itself or its descendants");}
+            ancestor=tx.query_row("SELECT parent_id FROM notes WHERE id=?1",[next],|r|r.get::<_,Option<String>>(0)).optional()?.context("Parent note not found")?;
+        }
+        if let Some(group)=group {tx.query_row("SELECT id FROM sidebar_groups WHERE id=?1",[group],|r|r.get::<_,String>(0)).optional()?.context("Group not found")?;}
+        let mut siblings:Vec<String>=tx.prepare("SELECT n.id FROM notes n LEFT JOIN sidebar_membership m ON m.note_id=n.id LEFT JOIN sidebar_note_order o ON o.note_id=n.id WHERE n.id!=?3 AND (n.parent_id=?1 OR (n.parent_id IS NULL AND ?1 IS NULL)) AND (?1 IS NOT NULL OR m.group_id=?2 OR (m.group_id IS NULL AND ?2 IS NULL)) ORDER BY COALESCE(o.position,9223372036854775807),n.title COLLATE NOCASE,n.id")?.query_map(params![parent,group,id],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let position=if let Some(anchor)=anchor {siblings.iter().position(|s|s==anchor).context("Drop destination changed; try again")?+usize::from(!before)} else {siblings.len()};
+        siblings.insert(position,id.to_owned());
+        if old_parent.as_deref()!=parent || old_group.as_deref()!=group {
+            if old_parent.as_deref()!=parent {tx.execute("UPDATE notes SET parent_id=?2,revision=revision+1,updated_at=unixepoch() WHERE id=?1",params![id,parent])?;}
+            tx.execute("DELETE FROM sidebar_membership WHERE note_id=?1",[id])?;
+            if let Some(group)=group {tx.execute("INSERT INTO sidebar_membership(note_id,group_id) VALUES(?1,?2)",params![id,group])?;}
+        }
+        for (i,sibling) in siblings.iter().enumerate() {tx.execute("INSERT INTO sidebar_note_order(note_id,position) VALUES(?1,?2) ON CONFLICT(note_id) DO UPDATE SET position=excluded.position",params![sibling,i as i64])?;}
+        tx.commit()?;self.get(id)
+    }
     pub fn delete(&self, id: &str, expected_revision: i64) -> Result<()> {
         let transaction = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         let has_children: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM notes WHERE parent_id=?1)", [id], |r| r.get(0))?;
@@ -366,6 +400,28 @@ impl Store {
 mod tests {
     use super::*;
 
+    #[test]
+    fn drag_relocation_is_atomic_ordered_and_preserves_subtrees()->Result<()> {
+        let db=Store::open(Path::new(":memory:"))?;
+        let a=db.create("A","Markdown A")?;let b=db.create("B","Markdown B")?;
+        let child=db.create_child("Child","Nested content",Some(&a.id))?;
+        let group=db.create_group("Work")?;
+        assert!(db.relocate_note(&a.id,Some(&child.id),None,None,false,a.revision).is_err());
+        assert!(db.relocate_note(&a.id,None,Some(&group.id),Some(&b.id),true,a.revision).is_err());
+        assert_eq!(db.get(&a.id)?,a);assert!(db.list_summaries()?.iter().all(|n|n.group_id.is_none()));
+        assert_eq!(db.relocate_note(&b.id,None,None,Some(&a.id),true,b.revision)?,b);
+        assert_eq!(db.list_summaries()?[0].id,b.id);
+        assert_eq!(db.relocate_note(&a.id,None,Some(&group.id),None,false,a.revision)?,a);
+        assert_eq!(db.get(&child.id)?,child);
+        let nested=db.relocate_note(&a.id,Some(&b.id),None,None,false,a.revision)?;
+        assert_eq!(nested.markdown,a.markdown);assert_eq!(nested.parent_id.as_deref(),Some(b.id.as_str()));
+        assert!(db.relocate_note(&a.id,None,None,None,false,a.revision).is_err());
+        assert_eq!(db.get(&a.id)?,nested);
+        assert!(db.delete_subtree(&a.id,a.revision).is_err());assert_eq!(db.get(&child.id)?,child);
+        db.delete_subtree(&a.id,nested.revision)?;
+        assert!(db.get(&child.id).is_err());assert!(db.get(&a.id).is_err());assert_eq!(db.get(&b.id)?,b);
+        Ok(())
+    }
     #[test]
     fn sparkpad_storage_preserves_existing_installations() -> Result<()> {
         let home=std::env::temp_dir().join(format!("sparkpad-storage-{}",uuid::Uuid::new_v4()));

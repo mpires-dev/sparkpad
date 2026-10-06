@@ -6,17 +6,21 @@ license = "AGPL-3.0-or-later"
 
 [features]
 default = ["gui"]
-gui = ["dep:gpui", "dep:gpui-component", "dep:empire-ui", "dep:cocoa", "dep:objc", "dep:raw-window-handle"]
+gui = ["dep:gpui", "dep:gpui-component", "dep:empire-ui", "dep:cocoa", "dep:objc", "dep:raw-window-handle", "dep:ropey", "dep:tree-sitter"]
 
 [dependencies]
 anyhow = "1"
 markdown = "1"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 gpui = { version = "=0.2.2", optional = true }
-gpui-component = { version = "=0.5.1", optional = true }
+gpui-component = { version = "=0.5.1", optional = true, features = ["tree-sitter-languages"] }
+ropey = { version = "=2.0.0-beta.1", optional = true }
+tree-sitter = { version = "0.25.4", optional = true }
 empire-ui = { path = "vendor/empire-ui", optional = true }
 cocoa = { version = "0.26", optional = true }
 objc = { version = "0.2", optional = true }
