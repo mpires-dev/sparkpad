@@ -40,7 +40,7 @@ fn tools() -> Vec<Value> {
         tool("update_note", "Replace title and Markdown. expected_revision prevents overwriting edits made in the panel or by other agents. Read again on conflict.", json!({"id":string,"title":string,"markdown":string,"expected_revision":revision}), &["id","title","markdown","expected_revision"], false),
         tool("patch_note", "Replace exactly one occurrence of text in a note, preserving the rest. Fails on missing or ambiguous text or a revision conflict.", json!({"id":string,"old_text":string,"new_text":string,"expected_revision":revision}), &["id","old_text","new_text","expected_revision"], false),
         tool("move_note", "Move a note under parent_id, or to the root with null. Preserves descendants and rejects cycles and revision conflicts.", json!({"id":string,"parent_id":{"type":["string","null"]},"expected_revision":revision}), &["id","parent_id","expected_revision"], false),
-        tool("delete_note", "Permanently delete a note at its current revision. Notes with children must have those children moved or deleted first.", json!({"id":string,"expected_revision":revision}), &["id","expected_revision"], false),
+        tool("delete_note", "Permanently delete a note at its current revision. include_children=true explicitly deletes its entire subtree atomically; false (default) rejects pages with children.", json!({"id":string,"expected_revision":revision,"include_children":{"type":"boolean","default":false}}), &["id","expected_revision"], false),
         tool("select_note", "Choose the note displayed in the floating panel. Works when the app is running or next time it opens.", json!({"id":string}), &["id"], false),
         tool("show_panel", "Show the floating panel when the desktop app is running.", json!({}), &[], false),
     ]
@@ -255,7 +255,9 @@ fn call(db: &Store, name: &str, a: &Value) -> Result<Value> {
             json!(db.update(&note.id, &note.title, &markdown, revision(a)?)?)
         }
         "delete_note" => {
-            db.delete(str_arg(a, "id")?, revision(a)?)?;
+            let include_children=match a.get("include_children") {None=>false,Some(Value::Bool(value))=>*value,_=>bail!("include_children must be a boolean")};
+            if include_children {db.delete_subtree(str_arg(a,"id")?,revision(a)?)?;}
+            else {db.delete(str_arg(a, "id")?, revision(a)?)?;}
             json!({"deleted":true})
         }
         "select_note" => json!(db.select(str_arg(a, "id")?)?),
@@ -351,6 +353,17 @@ pub fn serve(db: Store) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delete_subtree_requires_explicit_opt_in_and_a_current_revision()->Result<()> {
+        let db=Store::open(std::path::Path::new(":memory:"))?;let parent=db.create("Parent","Body")?;let child=db.create_child("Child","Nested body",Some(&parent.id))?;
+        let args=json!({"id":parent.id,"expected_revision":parent.revision});
+        assert!(call(&db,"delete_note",&args).is_err());
+        assert!(call(&db,"delete_note",&json!({"id":parent.id,"expected_revision":parent.revision,"include_children":"yes"})).is_err());
+        assert!(db.get(&child.id).is_ok());
+        assert!(call(&db,"delete_note",&json!({"id":parent.id,"expected_revision":parent.revision+1,"include_children":true})).is_err());
+        assert_eq!(call(&db,"delete_note",&json!({"id":parent.id,"expected_revision":parent.revision,"include_children":true}))?,json!({"deleted":true}));
+        assert!(db.get(&child.id).is_err());Ok(())
+    }
     #[test]
     fn ordered_tree_survives_reopen_and_rejects_stale_siblings() -> Result<()> {
         let path=std::env::temp_dir().join(format!("sparkpad-order-{}.sqlite3",uuid::Uuid::new_v4()));
