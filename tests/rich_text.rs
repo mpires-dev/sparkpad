@@ -12,6 +12,10 @@ mod block_editor;
 #[cfg(target_os = "macos")]
 #[path = "../src/blocks.rs"]
 mod blocks;
+#[path = "../src/rich_clipboard.rs"]
+mod rich_clipboard;
+#[path = "../src/code_highlight.rs"]
+mod code_highlight;
 #[cfg(target_os = "macos")]
 #[path = "../src/covers.rs"]
 mod covers;
@@ -30,6 +34,8 @@ mod mcp_presence;
 #[cfg(target_os = "macos")]
 #[path = "../src/icon_picker.rs"]
 mod icon_picker;
+#[path = "../src/ui_motion.rs"]
+mod ui_motion;
 #[path = "../src/icon_catalog.rs"]
 mod icon_catalog;
 #[path = "../src/preferences.rs"]
@@ -43,6 +49,20 @@ fn main() {
     let app = Application::new().with_assets(assets::Assets);
     assets::register_fonts(&app.text_system());
     let system = WindowTextSystem::new(app.text_system());
+    let code_text = "antes coração depois";
+    let code_range = 6..6 + "coração".len();
+    let code_runs = [TextRun { len: code_text.len(), font: font("JetBrains Mono"),
+        color: rgb(0x8fd7a3).into(), background_color: None, underline: None, strikethrough: None }];
+    let original = system.shape_line(code_text.into(), px(22.), &code_runs, None);
+    let styled = original.clone().with_scaled_ranges(&[code_range.clone()], 0.85, px(4.));
+    assert_eq!(styled.x_for_index(0), original.x_for_index(0));
+    assert_eq!(styled.x_for_index(code_range.start), original.x_for_index(code_range.start) + px(4.));
+    for (index, _) in code_text.char_indices() {
+        assert_eq!(styled.index_for_x(styled.x_for_index(index)), Some(index), "inline code padding and font scaling must preserve Unicode caret hit testing");
+    }
+    assert!(styled.runs.iter().any(|run| run.font_size == Some(px(22.) * 0.85)));
+    assert!(styled.runs.iter().any(|run| run.font_size.is_none()));
+    println!("Inline code geometry verified: smaller font, reserved padding, surrounding text and Unicode hit testing.");
     let mut family_ids=Vec::new();
     for (_,family,_) in assets::CONTENT_FONTS {
         let mut fonts=Vec::new();
@@ -153,3 +173,6 @@ fn main() {
 }
 #[cfg(not(target_os = "macos"))]
 fn main() {}
+
+#[path="../src/sidebar_drag.rs"]
+mod sidebar_drag;

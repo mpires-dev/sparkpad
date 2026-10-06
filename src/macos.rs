@@ -164,9 +164,10 @@ pub fn visible(window: &gpui::Window, show: bool) {
     }
 }
 
-/// GPUI 0.2.2's start_window_move is a no-op on macOS. Ask AppKit to track
-/// the native mouse event after leaving GPUI's borrowed event dispatch.
-pub fn start_drag(window: &gpui::Window, cx: &mut gpui::App) {
+/// Handle the custom title bar through AppKit: double-click toggles native zoom,
+/// while a single press tracks a window drag. Defer both until GPUI releases
+/// its borrowed event dispatch (start_window_move is a no-op on macOS).
+pub fn start_drag(mouse: &gpui::MouseDownEvent, window: &gpui::Window, cx: &mut gpui::App) {
     unsafe {
         let app: id = msg_send![class!(NSApplication), sharedApplication];
         let event: id = msg_send![app, currentEvent];
@@ -176,12 +177,134 @@ pub fn start_drag(window: &gpui::Window, cx: &mut gpui::App) {
         let win = native(window);
         let _: id = msg_send![win, retain];
         let _: id = msg_send![event, retain];
+        let zoom = mouse.click_count == 2;
         cx.spawn(async move |_| {
             gpui::Timer::after(std::time::Duration::from_millis(1)).await;
-            let _: () = msg_send![win, performWindowDragWithEvent: event];
+            if zoom {
+                let _: () = msg_send![win, zoom: nil];
+            } else {
+                let _: () = msg_send![win, performWindowDragWithEvent: event];
+            }
             let _: () = msg_send![event, release];
             let _: () = msg_send![win, release];
         })
         .detach();
+    }
+}
+
+/// Copy literal code without HTML or Markdown fence representations.
+pub fn write_plain_clipboard(text: &str, cx: &mut gpui::App) {
+    #[cfg(test)]
+    let isolated = TEST_CLIPBOARD.with(|value| value.get() != nil);
+    #[cfg(not(test))]
+    let isolated = false;
+    if !isolated { cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned())); return; }
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let board = rich_pasteboard();
+        let _: isize = msg_send![board, clearContents];
+        let kind = NSString::alloc(nil).init_str("public.utf8-plain-text");
+        let value = NSString::alloc(nil).init_str(text);
+        let _: bool = msg_send![board, setString: value forType: kind];
+        let _: () = msg_send![kind, release]; let _: () = msg_send![value, release];
+        let _: () = msg_send![pool, drain];
+    }
+}
+
+/// Add standard HTML and our lossless Markdown representation alongside GPUI's plain text.
+pub fn write_rich_clipboard(plain: String, html: &str, markdown: Option<&str>, cx: &mut gpui::App) {
+    #[cfg(test)]
+    let isolated = TEST_CLIPBOARD.with(|value| value.get() != nil);
+    #[cfg(not(test))]
+    let isolated = false;
+    if !isolated { cx.write_to_clipboard(gpui::ClipboardItem::new_string(plain.clone())); }
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let pasteboard = rich_pasteboard();
+        if isolated { let _: isize = msg_send![pasteboard, clearContents]; }
+        for (kind, value) in [("public.utf8-plain-text", Some(plain.as_str())), ("public.html", Some(html)), ("dev.mpires.sparkpad.markdown", markdown)] {
+            let Some(value) = value else { continue; };
+            let kind = NSString::alloc(nil).init_str(kind);
+            let value = NSString::alloc(nil).init_str(value);
+            let _: bool = msg_send![pasteboard, setString: value forType: kind];
+            let _: () = msg_send![kind, release]; let _: () = msg_send![value, release];
+        }
+        let _: () = msg_send![pool, drain];
+    }
+}
+pub fn clipboard_string(kind: &str) -> Option<String> {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let pasteboard = rich_pasteboard();
+        let kind = NSString::alloc(nil).init_str(kind);
+        let value: id = msg_send![pasteboard, stringForType: kind];
+        let result = if value == nil { None } else {
+            let bytes: *const std::ffi::c_char = msg_send![value, UTF8String];
+            if bytes.is_null() { None } else { Some(std::ffi::CStr::from_ptr(bytes).to_string_lossy().into_owned()) }
+        };
+        let _: () = msg_send![kind, release]; let _: () = msg_send![pool, drain]; result
+    }
+}
+fn rich_pasteboard() -> id {
+    #[cfg(test)]
+    if let Some(board) = TEST_CLIPBOARD.with(|value| (value.get() != nil).then_some(value.get())) { return board; }
+    unsafe { msg_send![class!(NSPasteboard), generalPasteboard] }
+}
+#[cfg(test)]
+thread_local! { static TEST_CLIPBOARD: std::cell::Cell<id> = const { std::cell::Cell::new(nil) }; }
+#[cfg(test)]
+pub struct TestClipboard { previous: id, board: id }
+#[cfg(test)]
+impl TestClipboard {
+    pub fn new() -> Self {
+        unsafe {
+            let board: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
+            let _: id = msg_send![board, retain];
+            let previous = TEST_CLIPBOARD.with(|value| value.replace(board));
+            Self { previous, board }
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for TestClipboard {
+    fn drop(&mut self) {
+        TEST_CLIPBOARD.with(|value| value.set(self.previous));
+        unsafe { let _: () = msg_send![self.board, releaseGlobally]; let _: () = msg_send![self.board, release]; }
+    }
+}
+/// Preserve every pasteboard representation in native regression tests, including images/HTML.
+#[cfg(test)]
+pub fn snapshot_clipboard() -> Vec<(String, Vec<u8>)> {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        let types: id = msg_send![pasteboard, types]; let count: usize = msg_send![types, count];
+        let mut snapshot = Vec::new();
+        for i in 0..count {
+            let kind: id = msg_send![types, objectAtIndex: i];
+            let name: *const std::ffi::c_char = msg_send![kind, UTF8String];
+            let data: id = msg_send![pasteboard, dataForType: kind];
+            if data == nil || name.is_null() { continue; }
+            let length: usize = msg_send![data, length]; let bytes: *const u8 = msg_send![data, bytes];
+            if length == 0 || !bytes.is_null() {
+                snapshot.push((std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned(),
+                    if length == 0 { Vec::new() } else { std::slice::from_raw_parts(bytes, length).to_vec() }));
+            }
+        }
+        let _: () = msg_send![pool, drain]; snapshot
+    }
+}
+#[cfg(test)]
+pub fn restore_clipboard(snapshot: Vec<(String, Vec<u8>)>) {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+        let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+        let _: isize = msg_send![pasteboard, clearContents];
+        for (kind, bytes) in snapshot {
+            let kind = NSString::alloc(nil).init_str(&kind);
+            let data: id = msg_send![class!(NSData), dataWithBytes: bytes.as_ptr() length: bytes.len()];
+            let _: bool = msg_send![pasteboard, setData: data forType: kind]; let _: () = msg_send![kind, release];
+        }
+        let _: () = msg_send![pool, drain];
     }
 }

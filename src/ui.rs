@@ -6,6 +6,8 @@ use crate::{
     note_tree::NoteTree,
 };
 use empire_ui::{Button, ButtonSize, ButtonVariant, Input, ScrollArea, Slider, SliderEvent, Resizable, ResizablePanel, Popover, PopoverEvent};
+use empire_ui::context_menu::ContextMenu;
+use crate::sidebar_drag::{Destination,Edge};
 use empire_ui::menu::{Menu, MenuItem, MenuAlign, MenuSide, MenuEvent};
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -23,12 +25,13 @@ actions!(
 struct NoteDrag { id: String, title: String }
 impl Render for NoteDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().px_3().py_1().rounded_md().bg(neutral(0x303030)).text_color(neutral(0xeeeeee)).text_sm().child(self.title.clone())
+        div().pt(px(24.)).pl(px(20.)).child(div().px_3().py_1().rounded_md().bg(neutral(0x303030)).text_color(neutral(0xeeeeee)).text_sm().child(self.title.clone()))
     }
 }
 
 const COVER_HEIGHT: f32 = 160.;
-const PAGE_ICON_SIZE: f32 = 48.;
+const PAGE_ICON_SIZE: f32 = 93.6;
+const SIDEBAR_PAGE_ICON_SIZE: f32 = 18.2;
 
 #[derive(Clone, Copy, PartialEq)]
 enum PageAction { Icon, Cover }
@@ -41,7 +44,7 @@ fn cover_background(preset: &crate::covers::CoverPreset) -> Background {
 fn slider_popover(slider: Entity<Slider>, label: &'static str, icon: &'static str, cx: &mut App) -> Entity<Popover> {
     cx.new(|cx| {
         cx.subscribe(&slider, |_, _, _, cx| cx.notify()).detach();
-        Popover::new(cx).side(MenuSide::Top).align(MenuAlign::Start).width(224.).padding(12.)
+        Popover::new(cx).motion(true).side(MenuSide::Top).align(MenuAlign::Start).width(224.).padding(12.)
             .trigger(move |open, _, _| {
                 Button::icon(label, icon).size(ButtonSize::IconSm)
                     .variant(if open {ButtonVariant::Secondary} else {ButtonVariant::Ghost})
@@ -56,6 +59,14 @@ fn slider_popover(slider: Entity<Slider>, label: &'static str, icon: &'static st
     })
 }
 
+fn note_menu_items()->Vec<MenuItem> {vec![
+    MenuItem::new("Renomear").icon("iconoir/regular/edit-pencil.svg"),
+    MenuItem::new("Adicionar nota filha").icon("iconoir/regular/plus.svg"),
+    MenuItem::new("Mover para raiz").icon("iconoir/regular/page.svg"),
+    MenuItem::separator(),
+    MenuItem::new("Excluir nota").icon("iconoir/regular/trash.svg").destructive(),
+]}
+struct PendingDelete {id:String,title:String,revision:i64,count:usize}
 struct Panel {
     page_action: Option<PageAction>,
     title_hovered: bool,
@@ -72,6 +83,15 @@ struct Panel {
     tree_focus: FocusHandle,
     hovered_note: Option<String>,
     note_menu: Entity<Menu>,
+    note_context_menu:Entity<Menu>,
+    pending_delete:Option<PendingDelete>,
+    delete_focus:FocusHandle,
+    tree_drop:Option<Destination>,
+    drag_pointer:Option<Point<Pixels>>,
+    drag_source:Option<String>,
+    drag_frame_pending:bool,
+    drag_frame_at:Instant,
+    hover_expand:Option<(String,Instant)>,
     note_menu_target: Option<String>,
     note_menu_open: bool,
     group_menu: Entity<Menu>,
@@ -96,7 +116,12 @@ struct Panel {
     focus_handle: FocusHandle,
     reader_scroll: ScrollHandle,
     editor_scroll: ScrollHandle,
-    sidebar_scroll: UniformListScrollHandle,
+    sidebar_scroll: ListState,
+    tree_motion: crate::ui_motion::TreeMotion,
+    sidebar_motion: empire_ui::motion::Tween,
+    interactions: std::collections::HashMap<String,empire_ui::motion::Tween>,
+    popup_motion: empire_ui::motion::Tween,
+    painted_page_action: Option<PageAction>,
     editing: bool,
     sidebar: bool,
     sidebar_width: f32,
@@ -148,7 +173,7 @@ impl Panel {
         let saved_font=db.setting("content_font").ok().flatten();
         let content_font=crate::assets::CONTENT_FONTS.iter().position(|font| Some(font.0)==saved_font.as_deref()).unwrap_or(0);
         let font_menu=cx.new(|cx| Menu::new(crate::assets::CONTENT_FONTS.iter().enumerate()
-            .map(|(i,font)| MenuItem::radio(0,font.2,i==content_font).close_on_click(true)).collect(),cx)
+            .map(|(i,font)| MenuItem::radio(0,font.2,i==content_font).close_on_click(true)).collect(),cx).motion(true)
             .side(MenuSide::Top).align(MenuAlign::Start).width(272.)
             .trigger(|open,_,_| Button::icon("content-font","iconoir/regular/text.svg")
                 .size(ButtonSize::IconSm).variant(if open {ButtonVariant::Secondary} else {ButtonVariant::Ghost}).into_any_element()));
@@ -166,22 +191,19 @@ impl Panel {
             .and_then(|note| db.get(&note.id).ok());
         let panel_request = db.setting("panel_request").ok().flatten();
         let mcp_connected = crate::mcp_presence::connected(db.mcp_sessions_dir()).ok();
-        let note_menu = cx.new(|cx| Menu::new(vec![
-            MenuItem::new("Renomear").icon("iconoir/regular/edit-pencil.svg"),
-            MenuItem::new("Adicionar nota filha").icon("iconoir/regular/plus.svg"),
-            MenuItem::new("Mover para raiz").icon("iconoir/regular/page.svg"),
-        ], cx).align(MenuAlign::End).width(200.).trigger(|_,_,_| {
+        let note_menu = cx.new(|cx| Menu::new(note_menu_items(), cx).motion(true).align(MenuAlign::End).width(200.).trigger(|_,_,_| {
             div().size(px(20.)).flex().items_center().justify_center().rounded(px(4.))
                 .hover(|s| s.bg(neutral(0x414141)))
                 .child(svg().path("iconoir/regular/more-horiz.svg").size(px(16.)).text_color(neutral(0xa3a3a3)))
                 .into_any_element()
         }));
+        let note_context_menu=cx.new(|cx|ContextMenu::menu(note_menu_items(),cx).motion(true).width(224.));
         let group_title=cx.new(|cx| empire_ui::input::single_line(window,cx).placeholder("Nome do grupo"));
         let group_menu=cx.new(|cx| Menu::new(vec![
             MenuItem::new("Renomear grupo").icon("iconoir/regular/edit-pencil.svg"),
             MenuItem::new("Adicionar nota").icon("iconoir/regular/plus.svg"),
             MenuItem::new("Excluir grupo (manter notas)").icon("iconoir/regular/trash.svg"),
-        ],cx).align(MenuAlign::End).width(248.).trigger(|_,_,_| {
+        ],cx).motion(true).align(MenuAlign::End).width(248.).trigger(|_,_,_| {
             div().size(px(20.)).flex().items_center().justify_center().rounded(px(4.))
                 .hover(|s| s.bg(neutral(0x414141)))
                 .child(svg().path("iconoir/regular/more-horiz.svg").size(px(16.)).text_color(neutral(0xa3a3a3))).into_any_element()
@@ -202,6 +224,7 @@ impl Panel {
             tree_focus: cx.focus_handle(),
             hovered_note: None,
             note_menu,
+            note_context_menu,delete_focus:cx.focus_handle(),pending_delete:None,tree_drop:None,drag_pointer:None,drag_source:None,drag_frame_pending:false,drag_frame_at:Instant::now(),hover_expand:None,
             note_menu_target: None,
             note_menu_open: false,
             group_menu, group_menu_target:None, group_menu_open:false,
@@ -223,7 +246,11 @@ impl Panel {
             focus_handle: cx.focus_handle(),
             reader_scroll: ScrollHandle::new(),
             editor_scroll: ScrollHandle::new(),
-            sidebar_scroll: UniformListScrollHandle::default(),
+            sidebar_scroll: ListState::new(0,ListAlignment::Top,px(32.)),
+            tree_motion: Default::default(),
+            sidebar_motion: empire_ui::motion::Tween::new(if sidebar {1.} else {0.}),
+            interactions: Default::default(),
+            popup_motion: empire_ui::motion::Tween::new(0.),painted_page_action:None,
             editing: false,
             sidebar,
             sidebar_width,
@@ -239,32 +266,27 @@ impl Panel {
             panel_request,
             last_bounds: None,
         };
-        panel.subscriptions.push(cx.subscribe_in(&panel.note_menu, window, |this,_,event,window,cx| {
-            match event {
-                MenuEvent::OpenChange(open) => { this.note_menu_open=*open; cx.notify(); }
-                MenuEvent::Select(index) => {
-                    if let Some(id)=this.note_menu_target.clone() {
-                        match index {
-                            0 => { this.select(&id,window,cx); this.title.update(cx, |s,cx| s.focus(window,cx)); }
-                            1 => this.new_child(Some(&id),window,cx),
-                            2 => this.move_note(&id,None,window,cx),
-                            _ => {},
-                        }
-                    }
+        for menu in [panel.note_menu.clone(),panel.note_context_menu.clone()] {
+            panel.subscriptions.push(cx.subscribe_in(&menu,window,|this,_,event,window,cx| {
+                match event {
+                    MenuEvent::OpenChange(open)=> {this.note_menu_open=*open;cx.notify();}
+                    MenuEvent::Select(index)=> if let Some(id)=this.note_menu_target.clone() {this.note_action(*index,&id,window,cx);},
+                    _=>{},
                 }
-                _ => {},
-            }
-        }));
+            }));
+        }
         panel.subscriptions.push(cx.subscribe(&panel.opacity_popover, |this, _, event, cx| {
             if matches!(event, PopoverEvent::OpenChange(true)) {
-                this.width_popover.update(cx, |popover, cx| popover.close(cx));
-                this.font_menu.update(cx, |menu,cx| menu.set_open(false,cx));
+                this.dismiss_page_popup();
+                this.width_popover.update(cx, |popover, cx| popover.dismiss(cx));
+                this.font_menu.update(cx, |menu,cx| menu.dismiss(cx));
             }
         }));
         panel.subscriptions.push(cx.subscribe(&panel.width_popover, |this, _, event, cx| {
             if matches!(event, PopoverEvent::OpenChange(true)) {
-                this.opacity_popover.update(cx, |popover, cx| popover.close(cx));
-                this.font_menu.update(cx, |menu,cx| menu.set_open(false,cx));
+                this.dismiss_page_popup();
+                this.opacity_popover.update(cx, |popover, cx| popover.dismiss(cx));
+                this.font_menu.update(cx, |menu,cx| menu.dismiss(cx));
             }
         }));
         panel.subscriptions.push(cx.subscribe(&panel.font_menu, |this, _, event, cx| {
@@ -279,6 +301,7 @@ impl Panel {
                     }
                 }
                 MenuEvent::OpenChange(true) => {
+                    this.dismiss_page_popup();
                     this.opacity_popover.update(cx, |popover,cx| popover.close(cx));
                     this.width_popover.update(cx, |popover,cx| popover.close(cx));
                 }
@@ -320,6 +343,7 @@ impl Panel {
                 crate::icon_picker::PickerEvent::Upload => this.choose_icon(cx),
             }
         }));
+        panel.sync_tree_motion(false);
         let scroll = panel.editor_scroll.clone();
         panel
             .editor
@@ -550,6 +574,7 @@ impl Panel {
             self.tree.groups=self.db.list_groups().unwrap_or_default();
             self.tree.set_notes(&self.notes);
         }
+        self.sync_tree_motion(false);
         self.last_data_version = None;
     }
     fn create_group(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -559,7 +584,7 @@ impl Panel {
                 self.tree.expanded.insert(group.id.clone());
                 self.refresh_tree();self.persist_expansion();
                 if let Some(row)=self.tree.rows.iter().position(|r| r.group.is_some_and(|i| self.tree.groups[i].id==group.id)) {
-                    self.sidebar_scroll.scroll_to_item(row,ScrollStrategy::Center);
+                    self.sidebar_scroll.scroll_to_reveal_item(row);
                 }
                 self.rename_group(&group.id,window,cx);
             }
@@ -594,18 +619,6 @@ impl Panel {
             Err(error) => {self.error=Some(error.to_string());cx.notify();}
         }
     }
-    fn move_note_to_group(&mut self, id: &str, group: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.save(cx) {return;}
-        let Some(revision)=self.notes.iter().find(|n| n.id==id).map(|n| n.revision) else {return;};
-        match self.db.move_to_group(id,group,revision) {
-            Ok(note) => {
-                self.refresh_tree();self.reveal_note(id);
-                if self.selected.as_ref().is_some_and(|n| n.id==id) {self.load(note,window,cx);}
-                cx.notify();
-            }
-            Err(error) => {self.error=Some(error.to_string());cx.notify();}
-        }
-    }
     fn persist_expansion(&self) {
         if let Ok(value) = serde_json::to_string(&self.tree.expanded) {
             let _ = self.db.set_setting("expanded_notes", &value);
@@ -613,13 +626,124 @@ impl Panel {
     }
     fn reveal_note(&mut self, id: &str) {
         if let Some(row) = self.tree.reveal(id, &self.notes) {
-            self.sidebar_scroll.scroll_to_item(row, ScrollStrategy::Center);
+            self.sync_tree_motion(false);
+            self.sidebar_scroll.scroll_to_reveal_item(row);
             self.persist_expansion();
         }
     }
     fn toggle_note(&mut self, id: &str, cx: &mut Context<Self>) {
         self.tree.toggle(id, &self.notes);
+        self.sync_tree_motion(true);
         self.persist_expansion();
+        cx.notify();
+    }
+    fn sync_tree_motion(&mut self, animate:bool) {
+        let mut offset=self.sidebar_scroll.logical_scroll_top();
+        let anchor=self.tree_motion.rows.get(offset.item_ix).map(|r|r.key.clone());
+        let old_count=self.sidebar_scroll.item_count();
+        self.tree_motion.sync(&self.tree,&self.notes,animate);
+        if let Some(index)=anchor.and_then(|key|self.tree_motion.rows.iter().position(|r|r.key==key)) {offset.item_ix=index;}
+        self.sidebar_scroll.splice(0..old_count,self.tree_motion.rows.len());
+        self.sidebar_scroll.scroll_to(offset);
+    }
+    fn interaction(&mut self,key:String,target:bool) -> f32 {
+        let tween=self.interactions.entry(key).or_insert_with(||empire_ui::motion::Tween::new(0.));
+        tween.set(if target {1.} else {0.},120);tween.value()
+    }
+    fn note_action(&mut self,index:usize,id:&str,window:&mut Window,cx:&mut Context<Self>) {
+        match index {
+            0=>{self.select(id,window,cx);self.title.update(cx,|s,cx|s.focus(window,cx));}
+            1=>self.new_child(Some(id),window,cx),
+            2=>self.move_note(id,None,window,cx),
+            4=>self.request_delete(id,window,cx),
+            _=>{},
+        }
+    }
+    fn request_delete(&mut self,id:&str,window:&mut Window,cx:&mut Context<Self>) {
+        if !self.save(cx) {return;}
+        if let Ok(note)=self.db.get(id) {
+            let count=self.tree.subtree_count(id);
+            window.focus(&self.delete_focus);
+            self.pending_delete=Some(PendingDelete {id:note.id,title:note.title,revision:note.revision,count});
+            self.note_menu.update(cx,|m,cx|m.dismiss(cx));self.note_context_menu.update(cx,|m,cx|m.dismiss(cx));
+            cx.notify();
+        }
+    }
+    fn confirm_delete(&mut self,window:&mut Window,cx:&mut Context<Self>) {
+        let Some(pending)=self.pending_delete.take() else {return;};
+        match self.db.delete_subtree(&pending.id,pending.revision) {
+            Ok(())=> {
+                self.refresh_tree();
+                if self.selected.as_ref().is_some_and(|n|self.tree.note_index(&n.id).is_none()) {
+                    self.dirty=false;
+                    if let Some(next)=self.notes.first().and_then(|n|self.db.select(&n.id).ok()) {self.load(next,window,cx);}
+                    else {self.selected=None;let _=self.db.set_setting("selected_note","");}
+                }
+                self.note_menu_target=None;window.focus(&self.tree_focus);
+            }
+            Err(e)=>self.error=Some(e.to_string()),
+        }
+        cx.notify();
+    }
+    fn update_tree_drop(&mut self,drag:&NoteDrag,row:crate::note_tree::TreeRow,event:&DragMoveEvent<NoteDrag>,window:&mut Window,cx:&mut Context<Self>) {
+        let position=event.event.position;
+        self.drag_pointer=Some(position);
+        if !event.bounds.contains(&position) {return;}
+        let depth=crate::sidebar_drag::desired_depth(row.depth,f32::from(position.x-event.bounds.left()));
+        let next=crate::sidebar_drag::plan(&self.tree,&self.notes,&drag.id,row,f32::from(position.y-event.bounds.top())/f32::from(event.bounds.size.height).max(1.),depth);
+        if next!=self.tree_drop {
+            self.hover_expand=next.as_ref().filter(|d|d.edge==Edge::Inside).and_then(|d|d.parent.as_ref().or(d.group.as_ref())).map(|id|(id.clone(),Instant::now()));
+            self.tree_drop=next;cx.notify();
+        }
+        self.schedule_drag_frame(window,cx);
+    }
+    fn schedule_drag_frame(&mut self,window:&mut Window,cx:&mut Context<Self>) {
+        if self.drag_frame_pending {return;}
+        self.drag_frame_pending=true;let panel=cx.entity().downgrade();
+        window.on_next_frame(move |window,cx| {let _=panel.update(cx,|this,cx| {this.drag_frame_pending=false;this.step_tree_drag(window,cx);});});
+    }
+    fn step_tree_drag(&mut self,window:&mut Window,cx:&mut Context<Self>) {
+        if !cx.has_active_drag() {self.tree_drop=None;self.hover_expand=None;self.drag_pointer=None;self.drag_source=None;cx.notify();return;}
+        let mut keep_running=false;
+        if let Some((id,since))=self.hover_expand.clone() {
+            if since.elapsed()>=Duration::from_millis(500) {self.hover_expand=None;if !self.tree.expanded.contains(&id) {self.toggle_note(&id,cx);}}
+            else {keep_running=true;}
+        }
+        let elapsed=self.drag_frame_at.elapsed().as_secs_f32().clamp(0.001,0.064);self.drag_frame_at=Instant::now();
+        if let Some(pointer)=self.drag_pointer {
+            let bounds=self.sidebar_scroll.viewport_bounds();
+            if bounds.contains(&pointer) {
+                let top=f32::from(pointer.y-bounds.top());let bottom=f32::from(bounds.bottom()-pointer.y);
+                let speed=if top<36. {-(36.-top)/36.*280.} else if bottom<36. {(36.-bottom)/36.*280.} else {0.};
+                if speed!=0. {
+                    self.sidebar_scroll.scroll_by(px(speed*elapsed));keep_running=true;cx.notify();
+                    // Re-evaluate the stationary pointer against measured visible rows only.
+                    let start=self.sidebar_scroll.logical_scroll_top().item_ix;
+                    for i in start..(start+128).min(self.tree_motion.rows.len()) {
+                        let Some(row_bounds)=self.sidebar_scroll.bounds_for_item(i) else {continue;};
+                        if row_bounds.top()>bounds.bottom() {break;}
+                        if row_bounds.contains(&pointer) {
+                            if let Some(source)=self.drag_source.as_deref() {
+                                let depth=crate::sidebar_drag::desired_depth(self.tree_motion.rows[i].row.depth,f32::from(pointer.x-row_bounds.left()));
+                                self.tree_drop=crate::sidebar_drag::plan(&self.tree,&self.notes,source,self.tree_motion.rows[i].row,f32::from(pointer.y-row_bounds.top())/f32::from(row_bounds.size.height).max(1.),depth);
+                            }
+                            break;
+                        }
+                    }
+                }
+            } else {self.tree_drop=None;self.hover_expand=None;cx.notify();}
+        }
+        if keep_running {self.schedule_drag_frame(window,cx);}
+    }
+    fn commit_tree_drop(&mut self,drag:&NoteDrag,window:&mut Window,cx:&mut Context<Self>) {
+        let destination=self.tree_drop.take();self.hover_expand=None;self.drag_pointer=None;
+        if !self.save(cx) {return;}
+        let Some(d)=destination else {cx.notify();return;};
+        let Some(revision)=self.db.get(&drag.id).ok().map(|n|n.revision) else {return;};
+        match self.db.relocate_note(&drag.id,d.parent.as_deref(),d.group.as_deref(),d.anchor.as_deref(),d.edge==Edge::Before,revision) {
+            Ok(note)=>{self.refresh_tree();self.reveal_note(&drag.id);if self.selected.as_ref().is_some_and(|n|n.id==drag.id) {self.load(note,window,cx);}}
+            Err(e)=>self.error=Some(e.to_string()),
+        }
         cx.notify();
     }
     fn move_note(&mut self, id: &str, parent: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
@@ -638,21 +762,21 @@ impl Panel {
     fn tree_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.tree_focus.is_focused(window) || self.tree.rows.is_empty()
             || event.keystroke.modifiers.platform || event.keystroke.modifiers.control || event.keystroke.modifiers.alt { return; }
-        let positions:Vec<_>=self.tree.rows.iter().enumerate().filter_map(|(i,r)| (!r.spacer && r.group.is_none()).then_some(i)).collect();
+        let positions:Vec<_>=self.tree.rows.iter().enumerate().filter_map(|(i,r)| r.is_page().then_some(i)).collect();
         if positions.is_empty() {return;}
-        let current = self.tree.rows.iter().position(|r| (!r.spacer && r.group.is_none()) && self.selected.as_ref().is_some_and(|n| n.id == self.notes[r.index].id)).unwrap_or(positions[0]);
+        let current = self.tree.rows.iter().position(|r| r.is_page() && self.selected.as_ref().is_some_and(|n| n.id == self.notes[r.index].id)).unwrap_or(positions[0]);
         let note_position=positions.iter().position(|i| *i==current).unwrap_or(0);
         let row = self.tree.rows[current];
         let note = self.notes[row.index].clone();
         let target = match event.keystroke.key.as_str() {
             "up" => Some(positions[note_position.saturating_sub(1)]),
             "down" => Some(positions[(note_position+1).min(positions.len()-1)]),
-            "right" if row.has_children && !self.tree.expanded.contains(&note.id) => {
+            "right" if !self.tree.expanded.contains(&note.id) => {
                 self.toggle_note(&note.id,cx); None
             }
             "right" if row.has_children => Some(positions[(note_position+1).min(positions.len()-1)]),
             "left" if self.tree.expanded.contains(&note.id) => { self.toggle_note(&note.id,cx); None }
-            "left" => note.parent_id.as_ref().and_then(|id| self.tree.rows.iter().position(|r| (!r.spacer && r.group.is_none()) && self.notes[r.index].id == *id)),
+            "left" => note.parent_id.as_ref().and_then(|id| self.tree.rows.iter().position(|r| r.is_page() && self.notes[r.index].id == *id)),
             "enter" => { self.editing=true; self.editor.update(cx, |e,cx| e.focus(window,cx)); None }
             _ => return,
         };
@@ -667,14 +791,15 @@ impl Panel {
         let expanded=self.tree.expanded.contains(&id);
         let hovered=self.hovered_note.as_deref()==Some(id.as_str());
         let owns_menu=self.group_menu_target.as_deref()==Some(id.as_str());
-        let hover_id=id.clone();let toggle_id=id.clone();let child_id=id.clone();let menu_id=id.clone();let drop_id=id.clone();
+        let hover_amount=self.interaction(format!("hover:{id}"),hovered);
+        let expand_amount=self.interaction(format!("expand:{id}"),expanded);
+        let hover_id=id.clone();let toggle_id=id.clone();let child_id=id.clone();let menu_id=id.clone();
         let title:AnyElement=if self.renaming_group.as_deref()==Some(id.as_str()) {
             Input::new(&self.group_title).unstyled().pad_x(0.).height(24.).text_size(12.).into_any_element()
         } else {div().truncate().text_xs().font_weight(FontWeight::MEDIUM).child(group.title).into_any_element()};
         let row=div().id(SharedString::from(format!("sidebar-group-{id}"))).relative()
             .h(px(30.)).w_full().min_w_0().px(px(8.)).rounded(px(6.)).flex().items_center().gap_1()
-            .text_color(neutral(0xa3a3a3)).cursor_pointer().hover(|s| s.bg(neutral(0x2a2a2a)))
-            .drag_over::<NoteDrag>(|s,_,_,_| s.bg(neutral(0x414141)))
+            .text_color(neutral(0xa3a3a3)).cursor_pointer().bg(Hsla::from(neutral(0x2a2a2a)).opacity(hover_amount))
             .on_hover(cx.listener(move |this,inside:&bool,_,cx| {
                 if *inside {this.hovered_note=Some(hover_id.clone());}
                 else if this.hovered_note.as_deref()==Some(hover_id.as_str()) {this.hovered_note=None;}
@@ -683,16 +808,16 @@ impl Panel {
             .child(div().flex_1().min_w_0().flex().items_center().gap_1()
                 .child(div().min_w_0().when(self.renaming_group.as_deref()==Some(id.as_str()),|d| d.flex_1()).child(title))
                 .child(div().size(px(16.)).flex_none().flex().items_center().justify_center()
-                    .opacity(if hovered { 1. } else { 0. })
-                    .child(svg().path(if expanded {"iconoir/regular/nav-arrow-down.svg"} else {"iconoir/regular/nav-arrow-right.svg"})
+                    .opacity(hover_amount)
+                    .child(svg().path("iconoir/regular/nav-arrow-right.svg").with_transformation(Transformation::rotate(radians(std::f32::consts::FRAC_PI_2*expand_amount)))
                         .size(px(12.)).text_color(neutral(0x858585)))))
-            .when(hovered || (self.group_menu_open && owns_menu), |d| {
-                d.child(div().flex_none().flex().gap(px(2.))
+            .when(hover_amount>0. || (self.group_menu_open && owns_menu), |d| {
+                d.child(div().opacity(if self.group_menu_open && owns_menu {1.} else {hover_amount}).flex_none().flex().gap(px(2.))
                     .child(div().id(SharedString::from(format!("group-new-{child_id}"))).size(px(20.)).rounded(px(4.))
                         .flex().items_center().justify_center().hover(|s| s.bg(neutral(0x414141)))
                         .child(svg().path("iconoir/regular/plus.svg").size(px(16.)).text_color(neutral(0xa3a3a3)))
                         .on_click(cx.listener(move |this,_,window,cx| {this.new_group_note(&child_id,window,cx);cx.stop_propagation();})))
-                    .when(!self.group_menu_open || owns_menu, |d| d.child(div()
+                    .when(hovered || (self.group_menu_open && owns_menu), |d| d.child(div()
                         .capture_any_mouse_down(cx.listener(move |this,_,_,_| this.group_menu_target=Some(menu_id.clone())))
                         .child(self.group_menu.clone()))))
             })
@@ -701,16 +826,43 @@ impl Panel {
                     window.focus(&this.tree_focus);this.toggle_note(&toggle_id,cx);
                 }
             }))
-            .on_drop(cx.listener(move |this,drag:&NoteDrag,window,cx| {
-                this.move_note_to_group(&drag.id,Some(&drop_id),window,cx);cx.stop_propagation();
-            }));
+;
         #[cfg(test)]
         let row=row.child(self.measure_page(&format!("group-{id}")));
         div().h(px(31.)).w_full().min_w_0().child(row).into_any_element()
     }
-    fn render_tree_row(&mut self, position: usize, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let row = self.tree.rows[position];
+    fn render_motion_row(&mut self,index:usize,cx:&mut Context<Self>)->AnyElement {
+        let entry=&self.tree_motion.rows[index];let row=entry.row;let amount=entry.amount.value();
+        let owner=if let Some(g)=row.group {format!("{}{}",if row.empty {"empty:"} else {""},self.tree.groups[g].id)} else if !row.spacer {format!("{}{}",if row.empty {"empty:"} else {""},self.notes[row.index].id)} else {String::new()};
+        let context_id=owner.clone();
+        let destination=self.tree_drop.as_ref().filter(|d|d.owner==owner).cloned();
+        let content=self.render_tree_row(row,cx);
+        let mut surface=div().relative().h(px(31.*amount)).w_full().min_w_0().overflow_hidden().opacity(amount)
+            .child(content)
+            .on_drag_move(cx.listener(move |this,event:&DragMoveEvent<NoteDrag>,window,cx| {let drag=event.drag(cx).clone();this.update_tree_drop(&drag,row,event,window,cx);}))
+            .on_drop(cx.listener(|this,drag:&NoteDrag,window,cx|{this.commit_tree_drop(drag,window,cx);cx.stop_propagation();}));
+        if let Some(d)=destination {
+            surface=surface.child(div().absolute().left(px(8.+(d.depth as f32*12.).min(72.))).right(px(8.))
+                .top(px(if d.edge==Edge::Before {0.} else {29.})).h(px(2.)).bg(neutral(0xc4c4c4)));
+            if d.edge==Edge::Inside {surface=surface.bg(neutral(0x303030)).child(div().absolute().right(px(8.)).top(px(4.)).px_1().rounded_sm().text_size(px(10.)).bg(neutral(0x303030)).text_color(neutral(0xbcbcbc)).child("Dentro"));}
+            #[cfg(test)] {surface=surface.child(self.measure_page("tree-drop-preview"));}
+        }
+        if row.is_page() {
+            surface=surface.on_mouse_down(MouseButton::Right,cx.listener(move |this,_,_,cx| {
+                this.note_menu_target=Some(context_id.clone());this.note_menu.update(cx,|m,cx|m.dismiss(cx));this.dismiss_page_popup();cx.notify();
+            }));
+            ContextMenu::new(&self.note_context_menu).detached().w_full().child(surface).into_any_element()
+        } else {surface.into_any_element()}
+    }
+    fn render_tree_row(&mut self, row: crate::note_tree::TreeRow, cx: &mut Context<Self>) -> AnyElement {
         if row.spacer {return div().h(px(31.)).w_full().into_any_element();}
+        if row.empty {
+            let empty=div().h(px(31.)).w_full().min_w_0().relative()
+                .flex().items_center().pl(px(38. + (row.depth as f32 * 12.).min(72.))).pr(px(8.))
+                .text_size(px(14.)).text_color(neutral(0x858585)).child("Vazio");
+            #[cfg(test)] let empty=empty.child(self.measure_page(&format!("empty-{}",row.group.map(|i|self.tree.groups[i].id.as_str()).unwrap_or_else(||self.notes[row.index].id.as_str()))));
+            return empty.into_any_element();
+        }
         if let Some(index)=row.group {return self.render_group_row(index,cx);}
         let note = &self.notes[row.index];
         let id = note.id.clone();
@@ -720,13 +872,15 @@ impl Panel {
         let expanded = self.tree.expanded.contains(&id);
         let hovered = self.hovered_note.as_deref() == Some(id.as_str());
         let owns_menu = self.note_menu_target.as_deref() == Some(id.as_str());
+        let hover_amount=self.interaction(format!("hover:{id}"),hovered);
+        let expand_amount=self.interaction(format!("expand:{id}"),expanded);
         let select_id = id.clone();
         let toggle_id = id.clone();
         let child_id = id.clone();
-        let drop_id = id.clone();
         let hover_id = id.clone();
         let menu_id = id.clone();
         let drag = NoteDrag { id:id.clone(), title:title.clone() };
+        let panel=cx.entity().downgrade();
         let item = div()
             .id(SharedString::from(format!("tree-note-{id}")))
             .relative().w_full().h(px(30.)).min_w_0()
@@ -735,8 +889,7 @@ impl Panel {
             .rounded(px(6.)).cursor_pointer()
             // Expansion is structure, not selection or hover: it never changes the background.
             .when(active, |s| s.bg(neutral(0x232323)))
-            .hover(|s| s.bg(neutral(0x2a2a2a)))
-            .drag_over::<NoteDrag>(|s, _, _, _| s.bg(neutral(0x414141)))
+            .bg(Hsla::from(neutral(if active {0x232323+((7.*hover_amount) as u32)*0x010101} else {0x2a2a2a})).opacity(if active {1.} else {hover_amount}))
             .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
                 if *inside { this.hovered_note = Some(hover_id.clone()); }
                 else if this.hovered_note.as_ref() == Some(&hover_id) { this.hovered_note = None; }
@@ -744,19 +897,19 @@ impl Panel {
             }))
             .child(
                 // One 22px slot replaces the old separate chevron + page columns.
-                div().w(px(22.)).h(px(18.)).mr(px(8.)).flex_none()
+                div().w(px(22.)).h(px(20.)).mr(px(8.)).flex_none()
                     .flex().items_center().justify_center()
                     .child(
                         div().id(SharedString::from(format!("tree-toggle-{id}")))
                             .size(px(20.)).flex_none().flex().items_center().justify_center().rounded(px(4.))
                             .when(hovered, |d| d.hover(|s| s.bg(neutral(0x414141))))
                             .when(!hovered && page_icon.is_some(), |d| d.child(
-                                crate::icon_picker::render_icon(page_icon.as_deref().unwrap_or_default(),14.)))
+                                crate::icon_picker::render_icon(page_icon.as_deref().unwrap_or_default(),SIDEBAR_PAGE_ICON_SIZE)))
                             .when(hovered || page_icon.is_none(), |d| d.child(svg().path(if hovered {
-                                if expanded { "iconoir/regular/nav-arrow-down.svg" }
-                                else { "iconoir/regular/nav-arrow-right.svg" }
+                                "iconoir/regular/nav-arrow-right.svg"
                             } else { "iconoir/regular/page.svg" })
-                                .size(px(if hovered {12.} else {14.})).text_color(neutral(0xa3a3a3))))
+                                .with_transformation(Transformation::rotate(radians(if hovered {std::f32::consts::FRAC_PI_2*expand_amount} else {0.})))
+                                .size(px(if hovered {12.} else {SIDEBAR_PAGE_ICON_SIZE})).text_color(neutral(0xa3a3a3))))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 window.focus(&this.tree_focus);
                                 this.toggle_note(&toggle_id,cx);
@@ -766,9 +919,9 @@ impl Panel {
             )
             .child(div().flex_1().min_w_0().text_size(px(14.)).font_weight(FontWeight::NORMAL)
                 .text_color(if active {neutral(0xeeeeee)} else {neutral(0xbcbcbc)}).truncate().child(title))
-            .when(hovered || (self.note_menu_open && owns_menu), |d| {
+            .when(hover_amount>0. || (self.note_menu_open && owns_menu), |d| {
                 d.child(
-                    div().flex_none().flex().items_center().gap(px(2.)).pl(px(3.))
+                    div().opacity(if self.note_menu_open && owns_menu {1.} else {hover_amount}).flex_none().flex().items_center().gap(px(2.)).pl(px(3.))
                         .child(
                             div().id(SharedString::from(format!("tree-new-{id}")))
                                 .size(px(20.)).flex().items_center().justify_center().rounded(px(4.))
@@ -779,7 +932,7 @@ impl Panel {
                                     cx.stop_propagation();
                                 })),
                         )
-                        .when(!self.note_menu_open || owns_menu, |d| d.child(
+                        .when(hovered || (self.note_menu_open && owns_menu), |d| d.child(
                             div().id(SharedString::from(format!("tree-menu-{id}")))
                                 .capture_any_mouse_down(cx.listener(move |this, _, _, _| {
                                     this.note_menu_target = Some(menu_id.clone());
@@ -792,11 +945,8 @@ impl Panel {
                 window.focus(&this.tree_focus);
                 this.select(&select_id,window,cx);
             }))
-            .on_drag(drag, |drag,_,_,cx| { cx.stop_propagation(); cx.new(|_| drag.clone()) })
-            .on_drop(cx.listener(move |this, drag: &NoteDrag, window, cx| {
-                this.move_note(&drag.id,Some(&drop_id),window,cx);
-                cx.stop_propagation();
-            }));
+            .on_drag(drag, move |drag,_,_,cx| {let _=panel.update(cx,|this,cx| {this.tree_drop=None;this.hover_expand=None;this.drag_source=Some(drag.id.clone());this.drag_frame_at=Instant::now();this.sync_tree_motion(false);cx.notify();});cx.stop_propagation();cx.new(|_|drag.clone())})
+;
         #[cfg(test)]
         let item = item.child({
             let geometry=self.tree_row_bounds.clone();
@@ -875,11 +1025,16 @@ impl Panel {
             }
         }).detach();
     }
+    fn dismiss_page_popup(&mut self) {
+        self.page_action=None;self.painted_page_action=None;
+        self.popup_motion=empire_ui::motion::Tween::new(0.);
+    }
     fn render_page_actions(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let alpha=self.interaction("title-actions".into(),self.title_hovered || self.page_action.is_some());
         let mut bar=div().id("page-actions").absolute().left(px(58.)).right_0().top_0()
             .h(px(32.)).flex().items_center().gap(px(4.)).text_size(px(14.))
             .text_color(neutral(0x858585)).font_weight(FontWeight::NORMAL)
-            .opacity(if self.title_hovered || self.page_action.is_some() {1.} else {0.});
+            .opacity(alpha);
         for (index,(icon,label)) in [
             ("emoji.svg",if self.page_icon.is_some() {"Alterar ícone"} else {"Adicionar ícone"}),
             ("media-image.svg",if self.page_cover.is_some() {"Alterar capa"} else {"Adicionar capa"}),
@@ -909,9 +1064,9 @@ impl Panel {
             .absolute().top_0().left_0().size_full().into_any_element()
     }
     fn render_page_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let is_cover=self.page_action==Some(PageAction::Cover);
+        let is_cover=self.painted_page_action==Some(PageAction::Cover);
         let popup_width: f32=if is_cover {520.} else {408.};
-        let mut popup=div().id("page-action-popup").relative()
+        let mut popup=div().id("page-action-popup").relative().opacity(self.popup_motion.value())
             .w(px(popup_width.min(f32::from(window.viewport_size().width)-24.))).p_3().flex().flex_col().gap_2().rounded(px(8.))
             .bg(neutral(0x202020)).border_1().border_color(neutral(0x414141)).shadow_lg()
             .text_size(px(14.)).font_weight(FontWeight::NORMAL).occlude()
@@ -919,7 +1074,7 @@ impl Panel {
             .on_key_down(cx.listener(|this,event: &KeyDownEvent,_,cx| {
                 if event.keystroke.key=="escape" { this.page_action=None; cx.stop_propagation(); cx.notify(); }
             }));
-        if self.page_action==Some(PageAction::Icon) {
+        if self.painted_page_action==Some(PageAction::Icon) {
             popup=popup.child(self.icon_picker.clone());
         } else if is_cover {
             popup=popup.child(div().flex().items_center().gap_2()
@@ -1001,13 +1156,12 @@ impl Panel {
         icon.into_any_element()
     }
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if macos::take_show() {
-            self.visibility(true, window, cx);
-            cx.activate(true);
+        if !cx.has_active_drag() {
+            if self.tree_drop.take().is_some() {cx.notify();}
+            self.hover_expand=None;self.drag_pointer=None;self.drag_source=None;
         }
-        if macos::take_toggle() {
-            self.visibility(!self.visible || macos::is_minimized(window), window, cx);
-        }
+        if macos::take_show() {self.visibility(true,window,cx);cx.activate(true);}
+        if macos::take_toggle() {self.visibility(!self.visible || macos::is_minimized(window),window,cx);}
         if self.dirty
             && self.error.is_none()
             && self.last_edit.elapsed() > Duration::from_millis(350)
@@ -1089,6 +1243,7 @@ impl Panel {
                     self.notes = notes;
                     self.tree.groups=groups;
                     self.tree.set_notes(&self.notes);
+                    self.sync_tree_motion(false);
                     cx.notify();
                 }
                 if self.dirty || self.error.is_some() {
@@ -1129,8 +1284,28 @@ impl Panel {
 }
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sidebar_motion.set(if self.sidebar {1.} else {0.},220);
+        let sidebar_amount=self.sidebar_motion.value();
+        let tree_moving=self.tree_motion.moving();
+        let removed=self.tree_motion.advance();
+        if removed {
+            let offset=self.sidebar_scroll.logical_scroll_top();
+            self.sidebar_scroll.splice(0..self.sidebar_scroll.item_count(),self.tree_motion.rows.len());
+            self.sidebar_scroll.scroll_to(offset);
+        } else {
+            for range in self.tree_motion.changed_ranges() {
+                let count=range.len();self.sidebar_scroll.splice(range,count);
+            }
+        }
+        if let Some(action)=self.page_action {self.painted_page_action=Some(action);}
+        self.popup_motion.set(if self.page_action.is_some() {1.} else {0.},160);
+        if self.page_action.is_none() && !self.popup_motion.moving() {self.painted_page_action=None;}
+        #[cfg(test)] {self.rendered_tree_rows=0;}
         self.editor
             .update(cx, |s, cx| {
+                // The 36px footer is outside the scroll viewport. Keep half a viewport
+                // of clickable writing space after the last block, including on resize.
+                s.set_end_space(((f32::from(window.viewport_size().height) - 36.).max(0.)) * 0.5, cx);
                 s.set_font_size(self.font_size, cx);
                 s.set_font_family(crate::assets::CONTENT_FONTS[self.content_font].1,cx);
             });
@@ -1159,7 +1334,7 @@ impl Render for Panel {
                 );
         } else {
             let page_actions=self.render_page_actions(cx);
-            let page_popup=self.page_action.map(|_| self.render_page_popup(window,cx));
+            let page_popup=self.painted_page_action.map(|_| self.render_page_popup(window,cx));
             let page_cover=self.page_cover.is_some().then(|| self.render_cover(cx));
             let overlapping_icon=(self.page_icon.is_some() && self.page_cover.is_some())
                 .then(|| self.render_page_icon(true,cx));
@@ -1314,8 +1489,8 @@ impl Render for Panel {
                     .flex_none()
                     .child(div().absolute().inset_0()
                         .cursor(CursorStyle::OpenHand)
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                            macos::start_drag(window, cx)
+                        .on_mouse_down(MouseButton::Left, |event, window, cx| {
+                            macos::start_drag(event, window, cx)
                         }))
                     .child(
                         // The native traffic lights start at y=8 and are 14 px tall.
@@ -1329,6 +1504,7 @@ impl Render for Panel {
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
                     ),
             )
+            .child(self.note_context_menu.clone())
             .child(
                 div()
                     .id("sidebar-heading")
@@ -1344,7 +1520,7 @@ impl Render for Panel {
                             .cursor(CursorStyle::OpenHand)
                             .on_mouse_down(
                                 MouseButton::Left,
-                                |_, window, cx| macos::start_drag(window, cx),
+                                |event, window, cx| macos::start_drag(event, window, cx),
                             )
                             .text_size(px(16.))
                             .text_color(neutral(0xeeeeee))
@@ -1372,17 +1548,28 @@ impl Render for Panel {
                     ),
             )
             .child(
-                uniform_list("notes-tree", self.tree.rows.len(), cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                    #[cfg(test)] { this.rendered_tree_rows = range.len(); }
-                    range.map(|i| this.render_tree_row(i, window, cx)).collect::<Vec<_>>()
-                }))
-                    .flex_1()
-                    .min_h_0()
-                    .track_scroll(self.sidebar_scroll.clone())
+                div().id("notes-tree").relative().flex_1().min_h_0().min_w_0()
+                    .when(self.tree_drop.as_ref().is_some_and(|d|d.owner=="__root-start"),|d|d.child(div().absolute().top_0().left(px(8.)).right(px(8.)).h(px(2.)).bg(neutral(0xc4c4c4))))
+                    .on_drag_move(cx.listener(|this,event:&DragMoveEvent<NoteDrag>,window,cx| {
+                        this.drag_pointer=Some(event.event.position);
+                        if !event.bounds.contains(&event.event.position) {this.tree_drop=None;this.hover_expand=None;cx.notify();}
+                        else {
+                            let start=this.sidebar_scroll.logical_scroll_top().item_ix;
+                            let on_row=(start..(start+128).min(this.tree_motion.rows.len())).any(|i|this.sidebar_scroll.bounds_for_item(i).is_some_and(|b|b.contains(&event.event.position)));
+                            if !on_row {
+                                let owner=this.tree.last_root().and_then(|i|this.tree.subtree_end(i)).map(|r|format!("{}{}",if r.empty {"empty:"} else {""},this.notes[r.index].id)).unwrap_or_else(||"__root-start".into());
+                                this.tree_drop=Some(Destination {owner,parent:None,group:None,anchor:None,edge:Edge::After,depth:0});this.hover_expand=None;cx.notify();
+                            }
+                        }
+                        this.schedule_drag_frame(window,cx);
+                    }))
+                    .on_drop(cx.listener(|this,drag:&NoteDrag,window,cx| {this.commit_tree_drop(drag,window,cx);cx.stop_propagation();}))
                     .track_focus(&self.tree_focus)
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                        this.tree_key(event, window, cx);
-                    })),
+                    .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|this.tree_key(event,window,cx)))
+                    .child(list(self.sidebar_scroll.clone(),cx.processor(|this,i:usize,_,cx| {
+                        #[cfg(test)] {this.rendered_tree_rows+=1;}
+                        this.render_motion_row(i,cx)
+                    })).size_full()),
             )
             .child(
                 div()
@@ -1406,7 +1593,12 @@ impl Render for Panel {
             .child(body).child(footer);
         #[cfg(test)]
         let content_view = content_view.relative().child(self.measure_page("content"));
-        let layout: AnyElement = if self.sidebar {
+        let layout: AnyElement = if self.sidebar_motion.moving() {
+            div().flex_1().min_h_0().min_w_0().flex()
+                .child(div().w(px(self.sidebar_width*sidebar_amount)).h_full().flex_none().overflow_hidden()
+                    .child(div().w(px(self.sidebar_width)).h_full().child(sidebar_view)))
+                .child(div().flex_1().min_w_0().h_full().child(content_view)).into_any_element()
+        } else if self.sidebar {
             let panel = cx.entity().downgrade();
             div().flex_1().min_h_0().min_w_0().child(
                 Resizable::horizontal("sidebar-content-split")
@@ -1428,6 +1620,10 @@ impl Render for Panel {
         } else {
             div().flex_1().min_h_0().min_w_0().child(content_view).into_any_element()
         };
+
+        if self.sidebar_motion.moving() || tree_moving || self.popup_motion.moving() || self.interactions.values().any(|t|t.moving()) {
+            window.request_animation_frame();
+        }
 
         div()
             .track_focus(&self.focus_handle)
@@ -1452,7 +1648,7 @@ impl Render for Panel {
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(
-                cx.listener(|this, _: &HidePanel, window, cx| this.visibility(false, window, cx)),
+                cx.listener(|this, _: &HidePanel, window, cx| {if this.pending_delete.take().is_some() {window.focus(&this.tree_focus);cx.notify();} else {this.visibility(false,window,cx);}}),
             )
             .when(self.error.is_some(), |s| {
                 s.child(
@@ -1509,8 +1705,8 @@ impl Render for Panel {
                     .right_0()
                     .h(px(if self.sidebar { 4. } else { 10. }))
                     .cursor(CursorStyle::OpenHand)
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        macos::start_drag(window, cx)
+                    .on_mouse_down(MouseButton::Left, |event, window, cx| {
+                        macos::start_drag(event, window, cx)
                     }),
             )
             .when(!self.sidebar, |root| {
@@ -1522,6 +1718,20 @@ impl Render for Panel {
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
                     ),
                 )
+            })
+            .when(self.pending_delete.is_some(),|root| {
+                let confirm=div().relative().child(Button::new("confirm-delete-note","Excluir").variant(ButtonVariant::Destructive).on_click(cx.listener(|this,_,window,cx|this.confirm_delete(window,cx))));
+                #[cfg(test)] let confirm=confirm.child(self.measure_page("confirm-delete-note"));
+                let pending=self.pending_delete.as_ref().unwrap();
+                let detail=if pending.count>1 {format!("A nota e suas {} subpáginas serão excluídas. Esta ação não pode ser desfeita.",pending.count-1)} else {"Esta ação não pode ser desfeita.".to_owned()};
+                root.child(div().id("delete-note-dialog").track_focus(&self.delete_focus).absolute().size_full().flex().items_center().justify_center().occlude().bg(rgba(0x00000088))
+                    .on_key_down(cx.listener(|this,e:&KeyDownEvent,_,cx|{if e.keystroke.key=="escape" {this.pending_delete=None;cx.stop_propagation();cx.notify();}}))
+                    .child(div().w(px(380.)).max_w_full().p_5().rounded_lg().bg(neutral(0x202020)).border_1().border_color(neutral(0x414141)).flex().flex_col().gap_3()
+                        .child(div().text_lg().font_weight(FontWeight::BOLD).child(format!("Excluir “{}”?",pending.title)))
+                        .child(div().text_sm().text_color(neutral(0xa3a3a3)).child(detail))
+                        .child(div().flex().justify_end().gap_2()
+                            .child(Button::new("cancel-delete-note","Cancelar").variant(ButtonVariant::Ghost).on_click(cx.listener(|this,_,_,cx|{this.pending_delete=None;cx.notify();})))
+                            .child(confirm))))
             })
 
     }
@@ -1633,10 +1843,53 @@ pub fn verify_native_tree(cx: &mut App) {
         window.draw(cx).clear();
     }).unwrap();
     assert!(panel.read(cx).rendered_tree_rows < 40);
-    cx.update_window(handle.into(), |_,window,_| window.remove_window()).unwrap();
+    let (source,edge)=cx.update_window(handle.into(),|_,window,cx| {
+        panel.update(cx,|state,cx| {state.reveal_note(&first.id);cx.notify();});draw_motion_frame(&panel,window,cx);
+        let state=panel.read(cx);let note=state.tree_row_bounds.borrow()[&first.id];let bounds=state.sidebar_scroll.viewport_bounds();
+        (point(note.left()+px(70.),note.center().y),point(bounds.left()+px(70.),bounds.bottom()-px(3.)))
+    }).unwrap();
+    for event in [
+        PlatformInput::MouseMove(MouseMoveEvent {position:source,..Default::default()}),
+        PlatformInput::MouseDown(MouseDownEvent {position:source,button:MouseButton::Left,click_count:1,..Default::default()}),
+        PlatformInput::MouseMove(MouseMoveEvent {position:source+point(px(6.),px(0.)),pressed_button:Some(MouseButton::Left),..Default::default()}),
+        PlatformInput::MouseMove(MouseMoveEvent {position:source+point(px(12.),px(0.)),pressed_button:Some(MouseButton::Left),..Default::default()}),
+        PlatformInput::MouseMove(MouseMoveEvent {position:edge,pressed_button:Some(MouseButton::Left),..Default::default()}),
+    ] {cx.update_window(handle.into(),|_,window,cx|{let _=window.dispatch_event(event,cx);draw_motion_frame(&panel,window,cx);}).unwrap();}
+    let before=panel.read(cx).sidebar_scroll.logical_scroll_top();
+    for _ in 0..3 {
+        cx.update_window(handle.into(),|_,window,cx| {
+            panel.update(cx,|state,cx| {state.drag_frame_at=Instant::now()-Duration::from_millis(32);state.step_tree_drag(window,cx);});
+            draw_motion_frame(&panel,window,cx);
+        }).unwrap();
+    }
+    let after=panel.read(cx).sidebar_scroll.logical_scroll_top();
+    assert!(after.item_ix>before.item_ix || after.offset_in_item>before.offset_in_item,"stationary edge drag must keep scrolling");
+    assert!(panel.read(cx).rendered_tree_rows<40,"auto-scroll must retain virtualization");
+    cx.update_window(handle.into(),|_,window,cx| {
+        cx.stop_active_drag(window);panel.update(cx,|state,cx|state.step_tree_drag(window,cx));
+        assert!(panel.read(cx).tree_drop.is_none());window.remove_window();
+    }).unwrap();
+    println!("Native drag autoscroll verified: stationary edge scrolling, cleared preview on cancellation and fewer than 40 rendered rows with 10k notes.");
     println!("Native note tree verified: 10k notes render fewer than 40 rows; nested creation, collapse, reveal and subtree moves preserve state.");
 }
 
+
+#[cfg(test)]
+fn draw_motion_frame(panel:&Entity<Panel>,window:&mut Window,cx:&mut App) {
+    // Hidden windows do not receive compositor frames; notify the animated views
+    // explicitly, using only this invisible window and no operating system input.
+    panel.update(cx,|state,cx| {
+        cx.notify();
+        state.opacity_popover.update(cx,|_,cx|cx.notify());
+        state.width_popover.update(cx,|_,cx|cx.notify());
+        state.font_menu.update(cx,|_,cx|cx.notify());
+        state.note_menu.update(cx,|_,cx|cx.notify());
+        state.note_context_menu.update(cx,|_,cx|cx.notify());
+        state.group_menu.update(cx,|_,cx|cx.notify());
+    });
+    window.refresh();
+    window.draw(cx).clear();
+}
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -1677,10 +1930,10 @@ pub fn verify_native_hover_async(cx: &mut App) {
             PlatformInput::MouseUp(MouseUpEvent {position:outside,button:MouseButton::Left,click_count:1,..Default::default()}),
         ];
         for (step,event) in events.into_iter().enumerate() {
-            cx.update_window(handle.into(),|_,w,cx| { let _=w.dispatch_event(event,cx); w.draw(cx).clear(); }).unwrap();
+            cx.update_window(handle.into(),|_,w,cx| { let _=w.dispatch_event(event,cx); draw_motion_frame(&panel,w,cx); }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
                 let state=panel.read(cx);
                 if step==0 { assert_eq!(state.hovered_note.as_deref(),Some(root.id.as_str())); }
                 if step==3 { assert_eq!(state.hovered_note,None); assert!(state.tree.expanded.contains(&root.id)); }
@@ -1701,10 +1954,10 @@ pub fn verify_native_hover_async(cx: &mut App) {
             PlatformInput::MouseDown(MouseDownEvent {position:outside,button:MouseButton::Left,click_count:1,..Default::default()}),
             PlatformInput::MouseUp(MouseUpEvent {position:outside,button:MouseButton::Left,click_count:1,..Default::default()}),
         ].into_iter().enumerate() {
-            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
-            Timer::after(Duration::from_millis(20)).await;
+            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
+            Timer::after(Duration::from_millis(250)).await;
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear(); let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx); let state=panel.read(cx);
                 if step==0 || step==1 {assert!(state.title_hovered,"title actions must stay visible when moving into their strip");}
                 if step==3 {assert!(state.page_action==Some(PageAction::Icon),"title icon action must open picker");}
                 if step==4 {assert!(!state.title_hovered);assert!(state.page_action.is_some());}
@@ -1715,11 +1968,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
         for id in ["coral","lavender"] {
             cx.update_window(handle.into(),|_,w,cx| {
                 panel.update(cx, |state,cx| {state.page_action=Some(PageAction::Cover);cx.notify();});
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
             }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             let tile=cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
                 let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
                 let popup=geometry["popup"];
                 assert!(popup.left()>=px(12.) && popup.right()<=w.viewport_size().width-px(12.),"gallery must fit inside the window");
@@ -1730,11 +1983,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseDown(MouseDownEvent {position:tile,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:tile,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear(); let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx); let state=panel.read(cx);
                 assert!(state.page_action.is_none(),"choosing a cover must close the gallery");
                 assert_eq!(crate::covers::preset(state.page_cover.as_deref().unwrap()).unwrap().id,id);
                 assert_eq!(state.db.presentation(&root.id).unwrap().1,state.page_cover);
@@ -1749,11 +2002,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
         }
         cx.update_window(handle.into(),|_,w,cx| {
             panel.update(cx, |state,cx| state.set_page_icon(Some("💻"),cx));
-            w.draw(cx).clear();
+            draw_motion_frame(&panel,w,cx);
         }).unwrap();
         Timer::after(Duration::from_millis(20)).await;
         let page_icon=cx.update_window(handle.into(),|_,w,cx| {
-            w.draw(cx).clear();let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
+            draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
             let icon=geometry["page-icon"];let cover=geometry["cover-preview"];let content=geometry["content"];
             assert!((f32::from(icon.center().y-cover.bottom())).abs()<1.,"the icon must straddle the cover edge by exactly 50%");
             assert!((f32::from(icon.left()-content.left())-78.).abs()<1.,"the icon must align with the title's text inset");
@@ -1764,28 +2017,28 @@ pub fn verify_native_hover_async(cx: &mut App) {
             PlatformInput::MouseDown(MouseDownEvent {position:page_icon,button:MouseButton::Left,click_count:1,..Default::default()}),
             PlatformInput::MouseUp(MouseUpEvent {position:page_icon,button:MouseButton::Left,click_count:1,..Default::default()}),
         ] {
-            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
             Timer::after(Duration::from_millis(20)).await;
         }
         cx.update_window(handle.into(),|_,w,cx| {
-            w.draw(cx).clear(); assert!(panel.read(cx).page_action==Some(PageAction::Icon),"the overlapping icon must remain clickable");
+            draw_motion_frame(&panel,w,cx); assert!(panel.read(cx).page_action==Some(PageAction::Icon),"the overlapping icon must remain clickable");
             panel.update(cx, |state,cx| {state.page_action=None;cx.notify();});
         }).unwrap();
         println!("Native page icon verified: 50% cover overlap, title alignment and clickable picker.");
         // The new selector must receive real clicks inside the deferred popup.
         for (query,value,icons) in [("foguete","🚀",false),("heart","sparkpad:icon:svg:iconoir/regular/heart.svg",true)] {
             cx.update_window(handle.into(),|_,w,cx| {
-                panel.update(cx,|state,cx| state.open_icon_picker(w,cx));w.draw(cx).clear();
+                panel.update(cx,|state,cx| state.open_icon_picker(w,cx));draw_motion_frame(&panel,w,cx);
             }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             cx.update_window(handle.into(),|_,w,cx| {
                 let picker=panel.read(cx).icon_picker.clone();
                 picker.update(cx,|picker,cx| {picker.scroll_to_end();cx.notify();});
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
             }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
                 let state=panel.read(cx);let picker=state.icon_picker.read(cx);
                 let geometry=picker.geometry.borrow();
                 assert_eq!(geometry["scrollbar"],geometry["viewport"],"scrollbar must stay anchored to the emoji viewport at the end of scrolling");
@@ -1795,22 +2048,22 @@ pub fn verify_native_hover_async(cx: &mut App) {
             }).unwrap();
             if icons {
                 let tab=cx.update_window(handle.into(),|_,w,cx| {
-                    w.draw(cx).clear();panel.read(cx).icon_picker.read(cx).geometry.borrow()["tab:Ícones"].center()
+                    draw_motion_frame(&panel,w,cx);panel.read(cx).icon_picker.read(cx).geometry.borrow()["tab:Ícones"].center()
                 }).unwrap();
                 for event in [
                     PlatformInput::MouseDown(MouseDownEvent {position:tab,button:MouseButton::Left,click_count:1,..Default::default()}),
                     PlatformInput::MouseUp(MouseUpEvent {position:tab,button:MouseButton::Left,click_count:1,..Default::default()}),
                 ] {
-                    cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                    cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                     Timer::after(Duration::from_millis(20)).await;
                 }
             }
             cx.update_window(handle.into(),|_,w,cx| {
-                panel.read(cx).icon_picker.clone().update(cx,|picker,cx| picker.set_search(query,w,cx));w.draw(cx).clear();
+                panel.read(cx).icon_picker.clone().update(cx,|picker,cx| picker.set_search(query,w,cx));draw_motion_frame(&panel,w,cx);
             }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             let choice=cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();let state=panel.read(cx);let popup=state.tree_row_bounds.borrow()["popup"];
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let popup=state.tree_row_bounds.borrow()["popup"];
                 assert!(popup.left()>=px(12.) && popup.right()<=w.viewport_size().width-px(12.));
                 assert!(popup.top()>=px(12.) && popup.bottom()<=w.viewport_size().height-px(12.));
                 state.icon_picker.read(cx).geometry.borrow()[&format!("choice:{value}")].center()
@@ -1820,11 +2073,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseDown(MouseDownEvent {position:choice,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:choice,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);
                 assert!(state.page_action.is_none());assert_eq!(state.page_icon.as_deref(),Some(value));
                 assert_eq!(state.db.presentation(&root.id).unwrap().0.as_deref(),Some(value));
                 assert_eq!(state.notes.iter().find(|n| n.id==root.id).unwrap().icon.as_deref(),Some(value));
@@ -1833,26 +2086,26 @@ pub fn verify_native_hover_async(cx: &mut App) {
             }).unwrap();
         }
         cx.update_window(handle.into(),|_,w,cx| {
-            panel.update(cx,|state,cx| state.open_icon_picker(w,cx));w.draw(cx).clear();
+            panel.update(cx,|state,cx| state.open_icon_picker(w,cx));draw_motion_frame(&panel,w,cx);
         }).unwrap();
         Timer::after(Duration::from_millis(20)).await;
         let upload_tab=cx.update_window(handle.into(),|_,w,cx| {
-            w.draw(cx).clear();panel.read(cx).icon_picker.read(cx).geometry.borrow()["tab:Fazer upload"].center()
+            draw_motion_frame(&panel,w,cx);panel.read(cx).icon_picker.read(cx).geometry.borrow()["tab:Fazer upload"].center()
         }).unwrap();
         for event in [
             PlatformInput::MouseDown(MouseDownEvent {position:upload_tab,button:MouseButton::Left,click_count:1,..Default::default()}),
             PlatformInput::MouseUp(MouseUpEvent {position:upload_tab,button:MouseButton::Left,click_count:1,..Default::default()}),
         ] {
-            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
             Timer::after(Duration::from_millis(20)).await;
         }
         cx.update_window(handle.into(),|_,w,cx| {
             panel.update(cx,|state,cx| {state.set_page_icon(None,cx);assert_eq!(state.db.presentation(&root.id).unwrap().0,None);state.set_page_icon(Some("💻"),cx);});
-            w.draw(cx).clear();
+            draw_motion_frame(&panel,w,cx);
         }).unwrap();
         println!("Native Notion icon picker verified: Portuguese search, emoji/SVG selection by real clicks, upload tab, popup bounds, recent history, sidebar metadata, removal and unchanged document.");
         let original_column = cx.update_window(handle.into(), |_, w, cx| {
-            w.draw(cx).clear(); panel.read(cx).tree_row_bounds.borrow()["document-column"]
+            draw_motion_frame(&panel,w,cx); panel.read(cx).tree_row_bounds.borrow()["document-column"]
         }).unwrap();
         for percent in [70., 40., 100.] {
             cx.update_window(handle.into(), |_, w, cx| {
@@ -1861,11 +2114,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
                     cx.emit(SliderEvent::Change(vec![percent]));
                     cx.emit(SliderEvent::Commit(vec![percent]));
                 });
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
             }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             cx.update_window(handle.into(), |_, w, cx| {
-                w.draw(cx).clear(); let state=panel.read(cx); let geometry=state.tree_row_bounds.borrow();
+                draw_motion_frame(&panel,w,cx); let state=panel.read(cx); let geometry=state.tree_row_bounds.borrow();
                 let column=geometry["document-column"]; let content=geometry["content"];
                 let icon=geometry["page-icon"]; let cover=geometry["cover-preview"];
                 assert!((f32::from(column.size.width-original_column.size.width*(percent/100.))).abs()<2.);
@@ -1881,7 +2134,7 @@ pub fn verify_native_hover_async(cx: &mut App) {
         println!("Native content width verified: centered 40/70/100% columns, aligned icon, full-width cover and persisted preference.");
         for width in [false, true] {
             let trigger=cx.update_window(handle.into(), |_,w,cx| {
-                w.draw(cx).clear(); let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx); let state=panel.read(cx);
                 let popover=if width {&state.width_popover} else {&state.opacity_popover};
                 assert!(!popover.read(cx).is_open());
                 popover.read(cx).trigger_bounds().center()
@@ -1891,11 +2144,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseDown(MouseDownEvent {position:trigger,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:trigger,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             let rail=cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear(); let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx); let state=panel.read(cx);
                 let popover=if width {&state.width_popover} else {&state.opacity_popover};
                 assert!(popover.read(cx).is_open());
                 let popup=popover.read(cx).popup_bounds().unwrap();
@@ -1908,14 +2161,14 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseDown(MouseDownEvent {position:rail,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:rail,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             cx.update_window(handle.into(),|_,_,cx| {
                 let state=panel.read(cx);
                 let slider=if width {&state.content_width} else {&state.opacity};
                 let expected=if width {70.} else {62.5};
-                assert!((slider.read(cx).value()-expected).abs()<2.,"slider inside the popup must receive clicks");
+                assert!((slider.read(cx).value()-expected).abs()<2.,"slider inside the popup must receive clicks: width={width}, value={}, expected={expected}",slider.read(cx).value());
                 let saved=state.db.setting(if width {"content_width"} else {"opacity"}).unwrap().unwrap().parse::<f32>().unwrap();
                 assert!((saved-slider.read(cx).value()).abs()<0.1,"popup slider must persist on release");
             }).unwrap();
@@ -1923,7 +2176,7 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseDown(MouseDownEvent {position:outside,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:outside,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             cx.update_window(handle.into(),|_,_,cx| {
@@ -1934,18 +2187,18 @@ pub fn verify_native_hover_async(cx: &mut App) {
         println!("Native footer popovers verified: icon clicks, upward positioning, live slider interaction, persistence and outside dismissal.");
         for light in [true, false] {
             let button=cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear(); panel.read(cx).tree_row_bounds.borrow()["theme-button"].center()
+                draw_motion_frame(&panel,w,cx); panel.read(cx).tree_row_bounds.borrow()["theme-button"].center()
             }).unwrap();
             for event in [
                 PlatformInput::MouseMove(MouseMoveEvent {position:button,..Default::default()}),
                 PlatformInput::MouseDown(MouseDownEvent {position:button,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:button,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);
                 assert_eq!(state.light_mode,light,"footer button must switch the theme");
                 assert_eq!(state.db.setting("theme").unwrap().as_deref(),Some(if light {"light"} else {"dark"}));
                 let theme=gpui_component::Theme::global(cx);
@@ -1960,18 +2213,18 @@ pub fn verify_native_hover_async(cx: &mut App) {
         println!("Native light mode verified: real footer clicks switch both theme systems, neutral colors, preserved font, persistence and unchanged notes.");
         for index in [1,2,0] {
             let button=cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();panel.read(cx).tree_row_bounds.borrow()["font-button"].center()
+                draw_motion_frame(&panel,w,cx);panel.read(cx).tree_row_bounds.borrow()["font-button"].center()
             }).unwrap();
             for event in [
                 PlatformInput::MouseMove(MouseMoveEvent {position:button,..Default::default()}),
                 PlatformInput::MouseDown(MouseDownEvent {position:button,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:button,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             let item=cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();let state=panel.read(cx);assert!(state.font_menu.read(cx).is_open());
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);assert!(state.font_menu.read(cx).is_open());
                 let popup=state.font_menu.read(cx).popup_bounds().unwrap();
                 point(popup.center().x,popup.top()+px(5.+14.+index as f32*28.))
             }).unwrap();
@@ -1980,11 +2233,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseDown(MouseDownEvent {position:item,button:MouseButton::Left,click_count:1,..Default::default()}),
                 PlatformInput::MouseUp(MouseUpEvent {position:item,button:MouseButton::Left,click_count:1,..Default::default()}),
             ] {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
             }
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear();let state=panel.read(cx);let font=crate::assets::CONTENT_FONTS[index];
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let font=crate::assets::CONTENT_FONTS[index];
                 assert_eq!(state.content_font,index);
                 assert_eq!(state.editor.read(cx).content_font_family(),font.1);
                 assert_eq!(state.db.setting("content_font").unwrap().as_deref(),Some(font.0));
@@ -2010,7 +2263,7 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 state.last_sync=Instant::now()-Duration::from_secs(1);state.last_data_version=None;
                 state.tick(w,cx);
             });
-            w.draw(cx).clear();
+            draw_motion_frame(&panel,w,cx);
         }).unwrap();
         println!("Native MCP preferences verified: sync applies sliders, typography, sidebar, theme, font radio selection and pinning without editing documents.");
         let (group_id,grouped_note,grouped_child)=cx.update_window(handle.into(),|_,w,cx| {
@@ -2026,8 +2279,30 @@ pub fn verify_native_hover_async(cx: &mut App) {
             })
         }).unwrap();
         Timer::after(Duration::from_millis(20)).await;
+        let empty_group_position=cx.update_window(handle.into(),|_,w,cx| {
+            draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
+            let group=geometry[&format!("group-{group_id}")];let empty=geometry[&format!("empty-{group_id}")];
+            assert_eq!(empty.size.height,px(31.));
+            assert_eq!(empty.top(),group.bottom()+px(1.),"empty message must sit directly below its header");
+            point(group.left()+px(50.),group.center().y)
+        }).unwrap();
+        for expanded in [false,true] {
+            for event in [
+                PlatformInput::MouseDown(MouseDownEvent {position:empty_group_position,button:MouseButton::Left,click_count:1,..Default::default()}),
+                PlatformInput::MouseUp(MouseUpEvent {position:empty_group_position,button:MouseButton::Left,click_count:1,..Default::default()}),
+            ] {
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
+                Timer::after(Duration::from_millis(20)).await;
+            }
+            cx.update_window(handle.into(),|_,_,cx| {
+                let state=panel.read(cx);
+                assert_eq!(state.tree.rows.iter().any(|r|r.empty && r.group.is_some_and(|g|state.tree.groups[g].id==group_id)),expanded);
+                assert_eq!(state.selected.as_ref().unwrap().id,root.id,"empty section toggles must not select a page");
+            }).unwrap();
+        }
+        println!("Native empty group verified: real header clicks show/hide an indented nonselectable placeholder.");
         let (source,destination)=cx.update_window(handle.into(),|_,w,cx| {
-            w.draw(cx).clear();let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
+            draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
             let source=geometry[&grouped_note.id];let group=geometry[&format!("group-{group_id}")];
             (point(source.left()+px(75.),source.center().y),group.center())
         }).unwrap();
@@ -2039,11 +2314,11 @@ pub fn verify_native_hover_async(cx: &mut App) {
             PlatformInput::MouseMove(MouseMoveEvent {position:destination,pressed_button:Some(MouseButton::Left),..Default::default()}),
             PlatformInput::MouseUp(MouseUpEvent {position:destination,button:MouseButton::Left,click_count:1,..Default::default()}),
         ] {
-            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
             Timer::after(Duration::from_millis(20)).await;
         }
         let group_position=cx.update_window(handle.into(),|_,w,cx| {
-            w.draw(cx).clear();let state=panel.read(cx);
+            draw_motion_frame(&panel,w,cx);let state=panel.read(cx);
             assert_eq!(state.db.get(&grouped_note.id).unwrap(),grouped_note,"grouping a root page must not modify its document");
             assert_eq!(state.db.get(&grouped_child.id).unwrap(),grouped_child,"dragging must preserve nested pages");
             assert_eq!(state.notes.iter().find(|n| n.id==grouped_note.id).unwrap().group_id.as_deref(),Some(group_id.as_str()),"real drag must move page into the group");
@@ -2057,12 +2332,12 @@ pub fn verify_native_hover_async(cx: &mut App) {
             PlatformInput::MouseDown(MouseDownEvent {position:group_position,button:MouseButton::Left,click_count:1,..Default::default()}),
             PlatformInput::MouseUp(MouseUpEvent {position:group_position,button:MouseButton::Left,click_count:1,..Default::default()}),
         ].into_iter().enumerate() {
-            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+            cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             if step==1 {
                 cx.update_window(handle.into(),|_,_,cx| {
                     let state=panel.read(cx);assert!(!state.tree.expanded.contains(&group_id));
-                    assert!(!state.tree.rows.iter().any(|r| (!r.spacer && r.group.is_none()) && state.notes[r.index].id==grouped_note.id));
+                    assert!(!state.tree.rows.iter().any(|r| r.is_page() && state.notes[r.index].id==grouped_note.id));
                 }).unwrap();
             }
         }
@@ -2081,7 +2356,7 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 state.db.delete(&grouped_note.id,grouped_note.revision).unwrap();
                 let new_note=state.db.get(&new_id).unwrap();state.db.delete(&new_id,new_note.revision).unwrap();
                 state.refresh_tree();cx.notify();
-            });w.draw(cx).clear();
+            });draw_motion_frame(&panel,w,cx);
         }).unwrap();
         println!("Native sidebar groups verified: creation, inline rename, real drag, collapse/expand, grouped note creation and deletion preserving pages.");
         cx.update_window(handle.into(),|_,w,cx| {
@@ -2091,12 +2366,12 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 state.db.reorder_sidebar(&roots,false,None,None).unwrap();
                 state.last_sync=Instant::now()-Duration::from_secs(1);state.last_data_version=None;
                 state.tick(w,cx);
-                let displayed:Vec<_>=state.tree.rows.iter().filter(|r|!r.spacer && r.group.is_none() && r.depth==0)
+                let displayed:Vec<_>=state.tree.rows.iter().filter(|r|r.is_page() && r.depth==0)
                     .map(|r|state.notes[r.index].id.clone()).collect();
                 assert_eq!(displayed,roots,"MCP sibling order must reach the virtualized sidebar");
                 assert_eq!(state.db.get(&root.id).unwrap(),root);
             });
-            w.draw(cx).clear();
+            draw_motion_frame(&panel,w,cx);
         }).unwrap();
         println!("Native MCP ordering verified: persistent sibling positions update the virtualized sidebar without editing notes.");
         cx.update_window(handle.into(),|_,w,cx| {
@@ -2107,9 +2382,116 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 state.set_page_cover(None,cx);
                 assert_eq!(state.db.presentation(&root.id).unwrap().1,None);
             });
-            w.draw(cx).clear();
+            draw_motion_frame(&panel,w,cx);
         }).unwrap();
         println!("Native cover gallery verified: real solid/gradient swatch clicks, popup bounds, persistence across note switches, removal and unchanged document.");
+        let (drag_a,drag_b)=cx.update_window(handle.into(),|_,w,cx| {
+            let notes=panel.update(cx,|state,cx| {
+                let a=state.db.create("Drag A","Preserve A").unwrap();let b=state.db.create("Drag B","Preserve B").unwrap();
+                state.refresh_tree();cx.notify();(a,b)
+            });draw_motion_frame(&panel,w,cx);notes
+        }).unwrap();
+        for edge in [Edge::Before,Edge::Inside,Edge::After] {
+            let (source,destination)=cx.update_window(handle.into(),|_,w,cx| {
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let geometry=state.tree_row_bounds.borrow();
+                let source=geometry[&drag_b.id];let target=geometry[&drag_a.id];
+                (point(source.left()+px(65.),source.center().y),point(target.left()+px(50.),match edge {Edge::Before=>target.top()+px(2.),Edge::After=>target.bottom()-px(2.),Edge::Inside=>target.center().y}))
+            }).unwrap();
+            for event in [
+                PlatformInput::MouseMove(MouseMoveEvent {position:source,..Default::default()}),
+                PlatformInput::MouseDown(MouseDownEvent {position:source,button:MouseButton::Left,click_count:1,..Default::default()}),
+                PlatformInput::MouseMove(MouseMoveEvent {position:source+point(px(6.),px(0.)),pressed_button:Some(MouseButton::Left),..Default::default()}),
+                PlatformInput::MouseMove(MouseMoveEvent {position:source+point(px(12.),px(0.)),pressed_button:Some(MouseButton::Left),..Default::default()}),
+                PlatformInput::MouseMove(MouseMoveEvent {position:destination,pressed_button:Some(MouseButton::Left),..Default::default()}),
+            ] {
+                cx.update_window(handle.into(),|_,w,cx|{let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
+                Timer::after(Duration::from_millis(20)).await;
+            }
+            cx.update_window(handle.into(),|_,w,cx| {
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let preview=state.tree_drop.as_ref().expect("drag must expose an insertion destination");
+                assert_eq!(preview.edge,edge);assert!(state.tree_row_bounds.borrow().contains_key("tree-drop-preview"));
+                if edge==Edge::Inside {assert_eq!(preview.parent.as_deref(),Some(drag_a.id.as_str()));}
+                else {assert_eq!(preview.parent,None);assert_eq!(preview.depth,0);}
+            }).unwrap();
+            if edge==Edge::Inside {
+                Timer::after(Duration::from_millis(520)).await;
+                cx.update_window(handle.into(),|_,w,cx|{panel.update(cx,|state,cx|state.step_tree_drag(w,cx));draw_motion_frame(&panel,w,cx);assert!(panel.read(cx).tree.expanded.contains(&drag_a.id),"hover must open a closed destination after 500ms");}).unwrap();
+            }
+            cx.update_window(handle.into(),|_,w,cx| {
+                let _=w.dispatch_event(PlatformInput::MouseUp(MouseUpEvent {position:destination,button:MouseButton::Left,click_count:1,..Default::default()}),cx);
+                draw_motion_frame(&panel,w,cx);
+            }).unwrap();
+            Timer::after(Duration::from_millis(30)).await;
+            cx.update_window(handle.into(),|_,_,cx| {
+                let state=panel.read(cx);let note=state.db.get(&drag_b.id).unwrap();assert_eq!(note.markdown,drag_b.markdown);
+                assert_eq!(note.parent_id.as_deref(),if edge==Edge::Inside {Some(drag_a.id.as_str())} else {None});
+                if edge!=Edge::Inside {
+                    let rows:Vec<_>=state.tree.rows.iter().filter(|r|r.is_page()).map(|r|state.notes[r.index].id.as_str()).collect();
+                    let a=rows.iter().position(|id|*id==drag_a.id).unwrap();let b=rows.iter().position(|id|*id==drag_b.id).unwrap();
+                    assert_eq!(b<a,edge==Edge::Before,"line direction must match the persisted sibling order");
+                }
+                assert!(state.tree_drop.is_none(),"release must clear the insertion preview");
+            }).unwrap();
+        }
+        let (source,destination)=cx.update_window(handle.into(),|_,w,cx| {
+            panel.update(cx,|state,cx| {let note=state.db.get(&drag_b.id).unwrap();state.db.move_note(&note.id,Some(&drag_a.id),note.revision).unwrap();state.refresh_tree();cx.notify();});
+            draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let source=state.tree_row_bounds.borrow()[&drag_b.id];let viewport=state.sidebar_scroll.viewport_bounds();
+            (point(source.left()+px(65.),source.center().y),point(viewport.left()+px(65.),viewport.bottom()-px(48.)))
+        }).unwrap();
+        for event in [
+            PlatformInput::MouseMove(MouseMoveEvent {position:source,..Default::default()}),
+            PlatformInput::MouseDown(MouseDownEvent {position:source,button:MouseButton::Left,click_count:1,..Default::default()}),
+            PlatformInput::MouseMove(MouseMoveEvent {position:source+point(px(6.),px(0.)),pressed_button:Some(MouseButton::Left),..Default::default()}),
+            PlatformInput::MouseMove(MouseMoveEvent {position:source+point(px(12.),px(0.)),pressed_button:Some(MouseButton::Left),..Default::default()}),
+            PlatformInput::MouseMove(MouseMoveEvent {position:destination,pressed_button:Some(MouseButton::Left),..Default::default()}),
+            PlatformInput::MouseUp(MouseUpEvent {position:destination,button:MouseButton::Left,click_count:1,..Default::default()}),
+        ] {cx.update_window(handle.into(),|_,w,cx|{let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();Timer::after(Duration::from_millis(20)).await;}
+        cx.update_window(handle.into(),|_,_,cx| {let state=panel.read(cx);assert_eq!(state.db.get(&drag_b.id).unwrap().parent_id,None,"dropping into empty tree space must promote a child to root");}).unwrap();
+        println!("Native tree drag verified: before/inside/after previews, upward and downward reordering, nesting, outdent, delayed expansion and preserved Markdown.");
+        let delete_child=cx.update_window(handle.into(),|_,w,cx| {
+            let child=panel.update(cx,|state,cx| {let child=state.db.create_child("Delete child","Preserved until confirmation",Some(&drag_a.id)).unwrap();state.refresh_tree();state.select(&child.id,w,cx);child});
+            draw_motion_frame(&panel,w,cx);child
+        }).unwrap();
+        for confirm in [false,true] {
+            let position=cx.update_window(handle.into(),|_,w,cx|{draw_motion_frame(&panel,w,cx);let bounds=panel.read(cx).tree_row_bounds.borrow()[&drag_a.id];point(bounds.left()+px(55.),bounds.center().y)}).unwrap();
+            for event in [
+                PlatformInput::MouseMove(MouseMoveEvent {position,..Default::default()}),
+                PlatformInput::MouseDown(MouseDownEvent {position,button:MouseButton::Right,click_count:1,..Default::default()}),
+                PlatformInput::MouseUp(MouseUpEvent {position,button:MouseButton::Right,click_count:1,..Default::default()}),
+            ] {cx.update_window(handle.into(),|_,w,cx|{let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();Timer::after(Duration::from_millis(20)).await;}
+            let delete_position=cx.update_window(handle.into(),|_,w,cx| {
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);let menu=state.note_context_menu.read(cx);
+                assert!(menu.is_open());assert_eq!(state.note_menu_target.as_deref(),Some(drag_a.id.as_str()));
+                assert_eq!(state.selected.as_ref().unwrap().id,delete_child.id,"right click must target the clicked note without switching the document");
+                let bounds=menu.popup_bounds().unwrap();assert!(bounds.left()>=px(0.)&&bounds.right()<=w.viewport_size().width);
+                point(bounds.center().x,bounds.bottom()-px(19.))
+            }).unwrap();
+            for event in [
+                PlatformInput::MouseDown(MouseDownEvent {position:delete_position,button:MouseButton::Left,click_count:1,..Default::default()}),
+                PlatformInput::MouseUp(MouseUpEvent {position:delete_position,button:MouseButton::Left,click_count:1,..Default::default()}),
+            ] {cx.update_window(handle.into(),|_,w,cx|{let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();Timer::after(Duration::from_millis(20)).await;}
+            cx.update_window(handle.into(),|_,_,cx|{let state=panel.read(cx);assert_eq!(state.pending_delete.as_ref().unwrap().count,2);assert!(state.db.get(&drag_a.id).is_ok());}).unwrap();
+            if confirm {
+                let position=cx.update_window(handle.into(),|_,w,cx|{draw_motion_frame(&panel,w,cx);panel.read(cx).tree_row_bounds.borrow()["confirm-delete-note"].center()}).unwrap();
+                for event in [
+                    PlatformInput::MouseDown(MouseDownEvent {position,button:MouseButton::Left,click_count:1,..Default::default()}),
+                    PlatformInput::MouseUp(MouseUpEvent {position,button:MouseButton::Left,click_count:1,..Default::default()}),
+                ] {cx.update_window(handle.into(),|_,w,cx|{let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();Timer::after(Duration::from_millis(20)).await;}
+            } else {
+                cx.update_window(handle.into(),|_,w,cx|{let _=w.dispatch_event(PlatformInput::KeyDown(KeyDownEvent {keystroke:Keystroke::parse("escape").unwrap(),is_held:false}),cx);draw_motion_frame(&panel,w,cx);}).unwrap();
+                Timer::after(Duration::from_millis(20)).await;
+                cx.update_window(handle.into(),|_,_,cx|{let state=panel.read(cx);assert!(state.pending_delete.is_none());assert!(state.db.get(&drag_a.id).is_ok());assert!(state.db.get(&delete_child.id).is_ok());}).unwrap();
+            }
+        }
+        cx.update_window(handle.into(),|_,w,cx| {
+            panel.update(cx,|state,cx| {
+                assert!(state.pending_delete.is_none());assert!(state.db.get(&drag_a.id).is_err());assert!(state.db.get(&delete_child.id).is_err());
+                assert!(state.selected.as_ref().is_some_and(|n|state.db.get(&n.id).is_ok()),"deleted selected child must switch to a remaining note");
+                assert_eq!(state.db.get(&root.id).unwrap(),root);assert_eq!(state.db.get(&drag_b.id).unwrap().markdown,drag_b.markdown);
+                let note=state.db.get(&drag_b.id).unwrap();state.db.delete(&note.id,note.revision).unwrap();state.refresh_tree();state.select(&root.id,w,cx);
+            });draw_motion_frame(&panel,w,cx);
+        }).unwrap();
+        println!("Native context menu and deletion verified: right click, pointer anchoring, unchanged selection, destructive action, Escape cancellation, subtree confirmation and valid fallback selection.");
         for (target,expected) in [(286.,286.),(1200.,420.),(-200.,180.),(300.,300.)] {
             let before=cx.update(|cx| panel.read(cx).tree_row_bounds.borrow()["sidebar"]).unwrap();
             let divider=point(before.right(),before.center().y);
@@ -2122,10 +2504,10 @@ pub fn verify_native_hover_async(cx: &mut App) {
                 PlatformInput::MouseUp(MouseUpEvent {position:destination,button:MouseButton::Left,click_count:1,..Default::default()}),
             ];
             for (step,event) in events.into_iter().enumerate() {
-                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);w.draw(cx).clear();}).unwrap();
+                cx.update_window(handle.into(),|_,w,cx| {let _=w.dispatch_event(event,cx);draw_motion_frame(&panel,w,cx);}).unwrap();
                 Timer::after(Duration::from_millis(20)).await;
                 cx.update_window(handle.into(),|_,w,cx| {
-                    w.draw(cx).clear(); let state=panel.read(cx);
+                    draw_motion_frame(&panel,w,cx); let state=panel.read(cx);
                     if step>=3 {
                         let geometry=state.tree_row_bounds.borrow();
                         let sidebar=geometry["sidebar"]; let content=geometry["content"];
@@ -2142,11 +2524,18 @@ pub fn verify_native_hover_async(cx: &mut App) {
         for visible in [false,true] {
             cx.update_window(handle.into(),|_,w,cx| {
                 panel.update(cx, |state,cx| state.toggle_sidebar(cx));
-                w.draw(cx).clear();
+                draw_motion_frame(&panel,w,cx);
             }).unwrap();
             Timer::after(Duration::from_millis(20)).await;
             cx.update_window(handle.into(),|_,w,cx| {
-                w.draw(cx).clear(); let state=panel.read(cx);
+                draw_motion_frame(&panel,w,cx);let state=panel.read(cx);
+                assert!(state.sidebar_motion.moving());
+                let left=f32::from(state.tree_row_bounds.borrow()["content"].left());
+                assert!(left>1. && left<301.,"sidebar must pass through intermediate widths, not jump: {left}");
+            }).unwrap();
+            Timer::after(Duration::from_millis(230)).await;
+            cx.update_window(handle.into(),|_,w,cx| {
+                draw_motion_frame(&panel,w,cx); let state=panel.read(cx);
                 assert_eq!(state.sidebar,visible);
                 let geometry=state.tree_row_bounds.borrow();
                 if visible {assert!((f32::from(geometry["sidebar"].size.width)-300.).abs()<2.,"reopening sidebar must preserve its chosen width");}

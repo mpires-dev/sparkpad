@@ -23,7 +23,8 @@ actions!(
         FormatItalic,
         FormatUnderline,
         FormatCode,
-        SelectDocument
+        SelectDocument,
+        PastePlain
     ]
 );
 pub fn init(cx: &mut App) {
@@ -32,6 +33,16 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-a", SelectDocument, Some("BlockEditor > Input")),
         KeyBinding::new("cmd-a", SelectDocument, Some("BlockEditor")),
         KeyBinding::new("ctrl-a", SelectDocument, Some("BlockEditor")),
+        KeyBinding::new("cmd-c", gpui_component::input::Copy, Some("BlockEditor > Input")),
+        KeyBinding::new("ctrl-c", gpui_component::input::Copy, Some("BlockEditor > Input")),
+        KeyBinding::new("cmd-c", gpui_component::input::Copy, Some("BlockEditor")),
+        KeyBinding::new("ctrl-c", gpui_component::input::Copy, Some("BlockEditor")),
+        KeyBinding::new("cmd-x", gpui_component::input::Cut, Some("BlockEditor")),
+        KeyBinding::new("ctrl-x", gpui_component::input::Cut, Some("BlockEditor")),
+        KeyBinding::new("cmd-v", gpui_component::input::Paste, Some("BlockEditor")),
+        KeyBinding::new("ctrl-v", gpui_component::input::Paste, Some("BlockEditor")),
+        KeyBinding::new("cmd-shift-v", PastePlain, Some("BlockEditor")),
+        KeyBinding::new("ctrl-shift-v", PastePlain, Some("BlockEditor")),
         KeyBinding::new("cmd-b", FormatBold, Some("BlockEditor > Input")),
         KeyBinding::new("cmd-i", FormatItalic, Some("BlockEditor > Input")),
         KeyBinding::new("cmd-u", FormatUnderline, Some("BlockEditor > Input")),
@@ -96,6 +107,9 @@ impl Render for BlockDrag {
 struct BlockInput {
     state: Entity<InputState>,
     _subscription: Subscription,
+    highlight: crate::code_highlight::CodeHighlight,
+    language_menu: Option<Entity<Menu>>,
+    _language_subscription: Option<Subscription>,
 }
 pub struct BlockEditor {
     document: Document,
@@ -109,11 +123,18 @@ pub struct BlockEditor {
     document_scroll: Option<ScrollHandle>,
     scroll_tick_pending: bool,
     drop_target: Option<(String, bool)>,
+    copied_code: Option<(String, std::time::Instant)>,
+    hovered_code: Option<String>,
+    hovered_block:Option<String>,
+    hover_motion:HashMap<String,empire_ui::motion::Tween>,
     row_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    slash_menu: Entity<Menu>,
+    _slash_subscription: Subscription,
     type_menu: Entity<Menu>,
     _type_menu_subscription: Subscription,
     focus_handle: FocusHandle,
     font_size: f32,
+    end_space: f32,
     font_family: SharedString,
     menu: bool,
     undo: Vec<Snapshot>,
@@ -124,7 +145,7 @@ impl BlockEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
         let type_menu = cx.new(|cx| {
-            Menu::new(type_menu_items(&Kind::Paragraph), cx)
+            Menu::new(type_menu_items(&Kind::Paragraph), cx).motion(true)
                 .align(MenuAlign::Start)
                 .width(220.)
                 .trigger(move |_, _, cx| {
@@ -174,6 +195,21 @@ impl BlockEditor {
             }
             cx.notify();
         });
+        let slash_menu = cx.new(|cx| Menu::new(Vec::new(), cx).motion(true).scroll_area(true)
+            .align(MenuAlign::Start).width(320.)
+            .trigger(|_, _, _| div().w(px(1.)).h(px(1.)).into_any_element()));
+        let slash_subscription = cx.subscribe_in(&slash_menu, window, |this, _, event, window, cx| {
+            match event {
+                MenuEvent::Select(index) => {
+                    // The first row is a nonselectable group label.
+                    if let Some((_, kind)) = index.checked_sub(1).and_then(|i| this.filtered_kinds().get(i).cloned()) {
+                        this.convert(kind, window, cx);
+                    } else { this.menu = false; cx.notify(); }
+                }
+                MenuEvent::OpenChange(false) => { this.menu = false; cx.notify(); }
+                _ => {}
+            }
+        });
         let mut editor = Self {
             document: Document::parse(""),
             inputs: HashMap::new(),
@@ -186,11 +222,17 @@ impl BlockEditor {
             document_scroll: None,
             scroll_tick_pending: false,
             drop_target: None,
+            copied_code:None,
+            hovered_code:None,
+            hovered_block:None,hover_motion:HashMap::new(),
             row_bounds: Rc::new(RefCell::new(HashMap::new())),
+            slash_menu,
+            _slash_subscription: slash_subscription,
             type_menu,
             _type_menu_subscription: subscription,
             focus_handle: cx.focus_handle(),
             font_size: 22.,
+            end_space: 0.,
             font_family: crate::assets::FONT_FAMILY.into(),
             menu: false,
             undo: Vec::new(),
@@ -213,6 +255,7 @@ impl BlockEditor {
     pub fn set_value(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_text_selections(None, cx);
         self.document = Document::parse(&value);
+        self.hovered_code = None;
         self.row_bounds.borrow_mut().clear();
         self.type_menu
             .update(cx, |menu, cx| menu.set_open(false, cx));
@@ -230,6 +273,12 @@ impl BlockEditor {
     pub fn set_font_family(&mut self, family: &str, cx: &mut Context<Self>) {
         if self.font_family.as_ref()!=family {
             self.font_family=family.to_owned().into();
+            cx.notify();
+        }
+    }
+    pub fn set_end_space(&mut self, height: f32, cx: &mut Context<Self>) {
+        if (self.end_space - height).abs() > 0.5 {
+            self.end_space = height;
             cx.notify();
         }
     }
@@ -289,8 +338,15 @@ impl BlockEditor {
     /// Inputs keep their identity and geometry while focus changes. There is no preview/editor swap.
     pub fn refresh_theme(&mut self, cx: &mut Context<Self>) {
         for block in &self.document.blocks {
-            if let Some(input)=self.inputs.get(&block.id) {
-                input.state.update(cx, |state,cx| state.set_inline_highlights(inline_styles(block),cx));
+            if let Some(input)=self.inputs.get_mut(&block.id) {
+                let styles = match &block.kind {
+                    Kind::Code(lang) => input.highlight.styles(lang, &block.text, cx.theme().highlight_theme.clone()),
+                    _ => inline_styles(block),
+                };
+                input.state.update(cx, |state,cx| {
+                    state.set_inline_highlights(styles,cx);
+                    state.set_inline_font_ranges(inline_fonts(block),cx);
+                });
             }
         }
         cx.notify();
@@ -301,14 +357,19 @@ impl BlockEditor {
         self.row_bounds
             .borrow_mut()
             .retain(|id, _| ids.contains(id));
-        for block in &self.document.blocks {
+        for (index, block) in self.document.blocks.iter().enumerate() {
+            let placeholder = if index + 1 == self.document.blocks.len() {
+                "Escreva ou digite /…"
+            } else {
+                ""
+            };
             if !self.inputs.contains_key(&block.id) {
                 let value = block.text.clone();
                 let state = cx.new(|cx| {
                     let mut s = InputState::new(window, cx)
                         .auto_grow(1, 5000)
                         .block_mode(true)
-                        .placeholder("Escreva ou digite /…");
+                        .placeholder(placeholder);
                     s.set_value(value, window, cx);
                     s
                 });
@@ -321,6 +382,9 @@ impl BlockEditor {
                     BlockInput {
                         state,
                         _subscription: subscription,
+                        highlight: Default::default(),
+                        language_menu: None,
+                        _language_subscription: None,
                     },
                 );
             }
@@ -329,8 +393,61 @@ impl BlockEditor {
                 let value = block.text.clone();
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
             }
-            let styles = inline_styles(block);
-            state.update(cx, |s, cx| s.set_inline_highlights(styles, cx));
+            if let Kind::Code(language) = &block.kind {
+                if self.inputs[&block.id].language_menu.is_none() {
+                    let weak = cx.entity().downgrade();
+                    let block_id = block.id.clone();
+                    let trigger_id = block_id.clone();
+                    let menu = cx.new(|cx| Menu::new(code_language_items(language), cx)
+                        .motion(true).align(MenuAlign::End).width(230.)
+                        .trigger(move |_, _, cx| {
+                            let label = weak.upgrade().and_then(|editor| {
+                                editor.read(cx).document.blocks.iter().find(|b| b.id == trigger_id)
+                                    .and_then(|b| match &b.kind { Kind::Code(lang) => Some(crate::code_highlight::label(lang)), _ => None })
+                            }).unwrap_or_else(|| "Texto simples".into());
+                            Button::new("code-language-trigger", label)
+                                .icon_after("iconoir/regular/nav-arrow-down.svg")
+                                .size(ButtonSize::Xs).variant(ButtonVariant::Ghost).into_any_element()
+                        }));
+                    let subscription = cx.subscribe_in(&menu, window, move |this, menu, event, w, cx| {
+                        match event {
+                            MenuEvent::Select(index) => {
+                                if let Some(&(language, _)) = crate::code_highlight::LANGUAGES.get(*index) {
+                                    this.set_code_language(&block_id, language, w, cx);
+                                }
+                            }
+                            MenuEvent::OpenChange(true) => menu.read(cx).focus_handle(cx).focus(w),
+                            MenuEvent::OpenChange(false) => {
+                                if menu.read(cx).focus_handle(cx).is_focused(w) {
+                                    if let Some(i) = this.document.blocks.iter().position(|b| b.id == block_id) {
+                                        this.state(i).update(cx, |state, cx| state.focus(w, cx));
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        cx.notify();
+                    });
+                    let input = self.inputs.get_mut(&block.id).unwrap();
+                    input.language_menu = Some(menu);
+                    input._language_subscription = Some(subscription);
+                }
+                self.inputs[&block.id].language_menu.as_ref().unwrap().update(cx, |menu, cx| {
+                    menu.set_items(code_language_items(language), cx);
+                });
+            } else if let Some(menu) = &self.inputs[&block.id].language_menu {
+                menu.update(cx, |menu, cx| menu.set_open(false, cx));
+            }
+            let input = self.inputs.get_mut(&block.id).unwrap();
+            let styles = match &block.kind {
+                Kind::Code(lang) => input.highlight.styles(lang, &block.text, cx.theme().highlight_theme.clone()),
+                _ => inline_styles(block),
+            };
+            state.update(cx, |s, cx| {
+                s.set_placeholder(placeholder, window, cx);
+                s.set_inline_highlights(styles, cx);
+                s.set_inline_font_ranges(inline_fonts(block), cx);
+            });
         }
     }
     fn point_in_document(&self, p: Point<Pixels>, cx: &App) -> Option<(usize, usize)> {
@@ -362,8 +479,24 @@ impl BlockEditor {
         }
         cx.notify();
     }
+    fn focused_code_index(&self, window: &Window, cx: &App) -> Option<usize> {
+        self.document.blocks.iter().enumerate().find_map(|(i, block)| {
+            (matches!(block.kind, Kind::Code(_)) && self.state(i).read(cx).focus_handle(cx).is_focused(window)).then_some(i)
+        })
+    }
     fn select_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(window, cx);
+        if let Some(i) = self.focused_code_index(window, cx) {
+            self.clear_text_selections(None, cx);
+            self.selected_block = None;
+            self.active = Some(self.document.blocks[i].id.clone());
+            self.menu = false;
+            let len = self.document.blocks[i].text.len();
+            self.state(i).update(cx, |state, cx| state.set_byte_selection(0..len, cx));
+            cx.emit(EditorEvent::Editing);
+            cx.notify();
+            return;
+        }
         let last = self.document.blocks.len() - 1;
         self.clear_text_selections(None, cx);
         self.state(0).update(cx, |s, cx| s.focus(window, cx));
@@ -376,6 +509,7 @@ impl BlockEditor {
         );
         cx.emit(EditorEvent::Editing);
     }
+    #[cfg(test)]
     fn selected_text(&self) -> Option<String> {
         let selection = self.text_selection?;
         let (a, z) = selection.ordered();
@@ -399,6 +533,61 @@ impl BlockEditor {
         self.clear_text_selections(None, cx);
         self.changed(window, cx);
         self.activate(i, cursor, window, cx);
+    }
+    fn clipboard_range(&self, cx: &App) -> Option<((usize, usize), (usize, usize))> {
+        if let Some(selection) = self.text_selection { return Some(selection.ordered()); }
+        if let Some(id) = &self.selected_block {
+            let i = self.document.blocks.iter().position(|block| &block.id == id)?;
+            return Some(((i, 0), (i, self.document.blocks[i].text.len())));
+        }
+        let i = self.active_index()?;
+        let range = self.state(i).read(cx).selection_range();
+        Some(((i, range.start), (i, range.end)))
+    }
+    fn copy_rich(&mut self, cut: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((a, z)) = self.clipboard_range(cx) else { return false; };
+        if a == z && self.selected_block.is_none() { return false; }
+        let fragment = self.document.fragment(a, z);
+        let plain = fragment.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n\n");
+        if a.0 == z.0 && self.selected_block.is_none() && matches!(self.document.blocks[a.0].kind, Kind::Code(_)) {
+            crate::macos::write_plain_clipboard(&plain, cx);
+        } else {
+            let html = crate::rich_clipboard::to_html(&fragment);
+            let markdown = Document::from_blocks(fragment).markdown();
+            crate::macos::write_rich_clipboard(plain, &html, Some(&markdown), cx);
+        }
+        if cut {
+            self.checkpoint(cx);
+            let (i, cursor) = self.document.replace_selection(a, z, "");
+            self.clear_text_selections(None, cx); self.changed(window, cx); self.activate(i, cursor, window, cx);
+        }
+        true
+    }
+    fn paste_clipboard(&mut self, plain_only: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((a, z)) = self.clipboard_range(cx) else { return false; };
+        let plain = crate::macos::clipboard_string("public.utf8-plain-text")
+            .or_else(|| cx.read_from_clipboard().and_then(|item| item.text()));
+        if matches!(self.document.blocks[a.0].kind, Kind::Code(_) | Kind::Source) || plain_only {
+            let Some(text) = plain else { return false; };
+            self.checkpoint(cx);
+            let (i, cursor) = self.document.replace_selection(a, z, &text);
+            self.clear_text_selections(None, cx); self.changed(window, cx); self.activate(i, cursor, window, cx); return true;
+        }
+        let mut fragment = if let Some(markdown) = crate::macos::clipboard_string("dev.mpires.sparkpad.markdown") {
+            Document::parse(&markdown).blocks
+        } else { crate::macos::clipboard_string("public.html").map(|html| crate::rich_clipboard::from_html(&html)).unwrap_or_default() };
+        if fragment.is_empty() {
+            let Some(text) = plain else { return false; };
+            if !text.contains('\n') {
+                self.checkpoint(cx);
+                let (i, cursor) = self.document.replace_selection(a, z, &text);
+                self.clear_text_selections(None, cx); self.changed(window, cx); self.activate(i, cursor, window, cx); return true;
+            }
+            fragment = text.replace("\r\n", "\n").split('\n').map(|line| Block::new(Kind::Paragraph, line.into())).collect();
+        }
+        self.checkpoint(cx);
+        let (i, cursor) = self.document.replace_fragment(a, z, fragment);
+        self.clear_text_selections(None, cx); self.changed(window, cx); self.activate(i, cursor, window, cx); true
     }
     fn collapse_document_selection(
         &mut self,
@@ -633,10 +822,11 @@ impl BlockEditor {
             self.document.blocks[i].edit(value);
             self.changed(window, cx);
             if self.active.as_deref() == Some(id) {
-                let text = &self.document.blocks[i].text;
+                let text = self.document.blocks[i].text.clone();
                 self.menu = self.document.blocks[i].kind == Kind::Paragraph
                     && text.starts_with('/')
                     && !text.contains('\n');
+                self.sync_slash_menu(cx);
                 if self.document.blocks[i].kind == Kind::Paragraph {
                     let kind = match text.as_str() {
                         "# " => Some(Kind::Heading(1)),
@@ -659,13 +849,14 @@ impl BlockEditor {
             InputEvent::BlockEnter => {
                 self.active = Some(id.into());
                 if matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Source) {
-                    state.update(cx, |s, cx| s.insert("\n", window, cx));
+                    state.update(cx, |s, cx| {
+                        if matches!(self.document.blocks[i].kind, Kind::Code(_)) { s.replace("\n", window, cx); }
+                        else { s.insert("\n", window, cx); }
+                    });
                     return;
                 }
                 if self.menu {
-                    if let Some((_, kind)) = self.filtered_kinds().first().cloned() {
-                        self.convert(kind, window, cx);
-                    }
+                    self.slash_menu.update(cx, |menu, cx| menu.choose_highlighted(cx));
                     return;
                 }
                 self.checkpoint(cx);
@@ -674,6 +865,7 @@ impl BlockEditor {
                 self.activate(next, 0, window, cx);
             }
             InputEvent::BlockBackspace => {
+                if matches!(self.document.blocks[i].kind, Kind::Code(_)) { return; }
                 self.active = Some(id.into());
                 if self.document.blocks[i].kind != Kind::Paragraph
                     && !matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Source)
@@ -691,6 +883,7 @@ impl BlockEditor {
                 }
             }
             InputEvent::BlockDelete => {
+                if matches!(self.document.blocks[i].kind, Kind::Code(_)) { return; }
                 if i + 1 < self.document.blocks.len() {
                     self.checkpoint(cx);
                     if let Some((next, cursor)) = self.document.merge_previous(i + 1) {
@@ -741,6 +934,53 @@ impl BlockEditor {
             self.activate(i, previous.cursor, window, cx);
         }
     }
+    fn indent_code(&mut self, outdent: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(i) = self.document.blocks.iter().enumerate().find_map(|(i, b)| {
+            (matches!(b.kind, Kind::Code(_)) && self.state(i).read(cx).focus_handle(cx).is_focused(window)).then_some(i)
+        }) else { return false; };
+        if self.text_selection.is_some_and(|s| s.anchor.0 != s.head.0) { return false; }
+        let state = self.state(i);
+        let text = state.read(cx).value().to_string();
+        let (value, selection) = code_indent(&text, state.read(cx).selection_range(), outdent);
+        if value != text {
+            self.checkpoint(cx);
+            self.document.blocks[i].edit(value);
+            self.active = Some(self.document.blocks[i].id.clone());
+            self.text_selection = None;
+            self.changed(window, cx);
+            state.update(cx, |s, cx| s.set_byte_selection(selection, cx));
+        }
+        true
+    }
+    fn copy_code(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(block) = self.document.blocks.iter().find(|b| b.id == id && matches!(b.kind, Kind::Code(_))) else { return; };
+        let code = self.inputs[&block.id].state.read(cx).value().to_string();
+        crate::macos::write_plain_clipboard(&code, cx);
+        let stamp = std::time::Instant::now();
+        self.copied_code = Some((id.to_owned(), stamp));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(1500)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.copied_code.as_ref().is_some_and(|(_, time)| *time == stamp) {
+                    this.copied_code = None;
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+    fn set_code_language(&mut self, id: &str, language: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(i) = self.document.blocks.iter().position(|b| b.id == id) else { return };
+        if !matches!(self.document.blocks[i].kind, Kind::Code(_)) { return; }
+        let cursor = self.state(i).read(cx).cursor();
+        if self.document.blocks[i].kind != Kind::Code(language.to_owned()) {
+            self.checkpoint(cx);
+            self.document.blocks[i].kind = Kind::Code(language.to_owned());
+            self.document.blocks[i].invalidate();
+            self.changed(window, cx);
+        }
+        self.activate(i, cursor, window, cx);
+    }
     fn convert(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
         let Some(i) = self.active_index() else { return };
         self.checkpoint(cx);
@@ -751,6 +991,7 @@ impl BlockEditor {
         block.kind = kind;
         block.invalidate();
         self.menu = false;
+        self.slash_menu.update(cx, |menu, cx| menu.dismiss(cx));
         self.changed(window, cx);
         if self.selected_block.is_none() {
             self.activate(i, self.document.blocks[i].text.len(), window, cx);
@@ -758,11 +999,12 @@ impl BlockEditor {
     }
     fn format(&mut self, style: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(selection) = self.text_selection {
-            self.checkpoint(cx);
             let (a, z) = selection.ordered();
+            if !(a.0..=z.0).any(|i| !matches!(self.document.blocks[i].kind, Kind::Code(_)) && !selection.range(i, self.document.blocks[i].text.len()).is_empty()) { return; }
+            self.checkpoint(cx);
             let all = (a.0..=z.0)
                 .filter(|i| {
-                    !selection
+                    !matches!(self.document.blocks[*i].kind, Kind::Code(_)) && !selection
                         .range(*i, self.document.blocks[*i].text.len())
                         .is_empty()
                 })
@@ -773,6 +1015,7 @@ impl BlockEditor {
                     )
                 });
             for i in a.0..=z.0 {
+                if matches!(self.document.blocks[i].kind, Kind::Code(_)) { continue; }
                 let range = selection.range(i, self.document.blocks[i].text.len());
                 if self.document.blocks[i].is_formatted(range.clone(), style) == all {
                     self.document.blocks[i].format(range, style);
@@ -783,6 +1026,7 @@ impl BlockEditor {
             return;
         }
         let Some(i) = self.active_index() else { return };
+        if matches!(self.document.blocks[i].kind, Kind::Code(_)) { return; }
         let state = self.state(i);
         let range = state.read(cx).selection_range();
         if range.is_empty() {
@@ -893,6 +1137,26 @@ impl BlockEditor {
         }
         self.select_block(drag.id.clone(), window, cx);
     }
+    fn sync_slash_menu(&mut self, cx: &mut Context<Self>) {
+        let mut items = vec![MenuItem::group_label("Blocos básicos")];
+        for (label, kind) in self.filtered_kinds() {
+            let shortcut = match kind {
+                Kind::Heading(1) => "#", Kind::Heading(2) => "##", Kind::Heading(3) => "###",
+                Kind::Bullet => "-", Kind::Number(_) => "1.", Kind::Task(_) => "[]",
+                Kind::Quote => ">", Kind::Code(_) => "```", Kind::Divider => "---", _ => "",
+            };
+            items.push(MenuItem::new(label).icon(kind_display(&kind).1).shortcut(shortcut));
+        }
+        if items.len() == 1 { items.push(MenuItem::group_label("Nenhum bloco encontrado")); }
+        items.push(MenuItem::separator());
+        items.push(MenuItem::new("Fechar menu").shortcut("esc"));
+        let open = self.menu;
+        self.slash_menu.update(cx, |menu, cx| {
+            menu.set_items(items, cx);
+            menu.set_open(open, cx);
+            if open { menu.navigate(1, cx); }
+        });
+    }
     fn filtered_kinds(&self) -> Vec<(&'static str, Kind)> {
         let query = self
             .active_index()
@@ -914,7 +1178,7 @@ impl BlockEditor {
             .filter(|(label, _)| label.to_lowercase().contains(&query))
             .collect()
     }
-    fn toolbar(&self, text_selection: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn toolbar(&self, text_selection: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let mut origin = point(px(0.), px(-38.));
         if text_selection {
             if let Some(i) = self
@@ -1040,7 +1304,7 @@ impl BlockEditor {
     fn selection_toolbar_index(&self, cx: &App) -> Option<usize> {
         let selection = self.text_selection?;
         let (a, z) = selection.ordered();
-        (a.0..=z.0).find(|i| !self.state(*i).read(cx).selection_range().is_empty())
+        (a.0..=z.0).find(|i| !matches!(self.document.blocks[*i].kind, Kind::Code(_)) && !self.state(*i).read(cx).selection_range().is_empty())
     }
 }
 /// Bounds are window coordinates from the current layout, including scrolling and wrapping.
@@ -1116,6 +1380,62 @@ fn type_menu_items(current: &Kind) -> Vec<MenuItem> {
         })
         .collect()
 }
+/// Apply code indentation as one edit while preserving byte-based selections.
+fn code_indent(text: &str, selection: std::ops::Range<usize>, outdent: bool) -> (String, std::ops::Range<usize>) {
+    if selection.is_empty() && !outdent {
+        let mut value = text.to_owned();
+        value.insert_str(selection.start, "  ");
+        return (value, selection.start + 2..selection.start + 2);
+    }
+    let start = text[..selection.start].rfind('\n').map_or(0, |p| p + 1);
+    // A selection ending at the start of a line does not include that line.
+    let last = if !selection.is_empty() { selection.end - 1 } else { selection.end };
+    let mut edits = Vec::new();
+    let mut offset = start;
+    loop {
+        if outdent {
+            let line = &text[offset..];
+            let n = if line.starts_with('\t') { 1 } else { line.bytes().take(2).take_while(|&b| b == b' ').count() };
+            if n > 0 { edits.push((offset, offset + n, "")); }
+        } else { edits.push((offset, offset, "  ")); }
+        let Some(next) = text[offset..].find('\n').map(|n| offset + n + 1) else { break; };
+        if next > last { break; }
+        offset = next;
+    }
+    let map = |p: usize| {
+        let mut delta = 0isize;
+        for &(a, b, replacement) in &edits {
+            if p < a { break; }
+            if p < b { return (a as isize + delta + replacement.len() as isize) as usize; }
+            delta += replacement.len() as isize - (b - a) as isize;
+        }
+        (p as isize + delta) as usize
+    };
+    let range = map(selection.start)..map(selection.end);
+    let mut value = text.to_owned();
+    for &(a, b, replacement) in edits.iter().rev() { value.replace_range(a..b, replacement); }
+    (value, range)
+}
+
+fn code_language_items(current: &str) -> Vec<MenuItem> {
+    crate::code_highlight::LANGUAGES.iter().map(|(id, label)| {
+        let item = MenuItem::new(*label);
+        if *id == crate::code_highlight::canonical(current) {
+            item.icon("iconoir/regular/check.svg")
+        } else { item }
+    }).collect()
+}
+fn inline_fonts(block: &Block) -> Vec<(std::ops::Range<usize>, SharedString)> {
+    if matches!(block.kind, Kind::Code(_)) { return vec![]; }
+    let mut ranges: Vec<(std::ops::Range<usize>, SharedString)> = Vec::new();
+    for span in block.spans.iter().filter(|span| span.marks.code) {
+        if let Some((range, _)) = ranges.last_mut().filter(|(range, _)| range.end == span.range.start) {
+            range.end = span.range.end;
+        } else { ranges.push((span.range.clone(), "JetBrains Mono".into())); }
+    }
+    ranges
+}
+
 fn inline_styles(block: &Block) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
     block
         .spans
@@ -1135,8 +1455,9 @@ fn inline_styles(block: &Block) -> Vec<(std::ops::Range<usize>, HighlightStyle)>
                     } else {
                         FontStyle::Normal
                     }),
-                    color: m.link.as_ref().map(|_| neutral(0xd4d4d4).into()),
-                    background_color: m.code.then_some(neutral(0x303030).into()),
+                    color: if m.code { Some(rgb(if empire_ui::theme_mode() == empire_ui::ThemeMode::Light {0x35764a} else {0x8fd7a3}).into()) }
+                        else { m.link.as_ref().map(|_| neutral(0xd4d4d4).into()) },
+                    background_color: m.code.then_some(rgb(if empire_ui::theme_mode() == empire_ui::ThemeMode::Light {0xedf5ee} else {0x203128}).into()),
                     strikethrough: m.strike.then_some(StrikethroughStyle {
                         thickness: px(1.),
                         color: None,
@@ -1155,6 +1476,7 @@ fn inline_styles(block: &Block) -> Vec<(std::ops::Range<usize>, HighlightStyle)>
 impl Render for BlockEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dragging = cx.has_active_drag();
+        self.row_bounds.borrow_mut().retain(|id, _| id != "__toolbar" && !id.starts_with("__code-tools-") && !id.starts_with("__code-copy-"));
         let mut root = div()
             .id("blocks")
             .key_context("BlockEditor")
@@ -1166,6 +1488,12 @@ impl Render for BlockEditor {
             .gap_2()
             .text_size(px(self.font_size))
             .line_height(relative(1.6))
+            .capture_action(cx.listener(|this, _: &gpui_component::input::IndentInline, w, cx| {
+                if this.indent_code(false, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
+            }))
+            .capture_action(cx.listener(|this, _: &gpui_component::input::OutdentInline, w, cx| {
+                if this.indent_code(true, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
+            }))
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<BlockDrag>, _, cx| {
                 this.update_drop_target(e, cx)
             }))
@@ -1186,7 +1514,10 @@ impl Render for BlockEditor {
             )
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::MoveUp, w, cx| {
-                    this.collapse_document_selection(false, w, cx)
+                    if this.menu {
+                        this.slash_menu.update(cx, |menu, cx| menu.navigate(-1, cx));
+                        cx.stop_propagation();
+                    } else { this.collapse_document_selection(false, w, cx); }
                 }),
             )
             .capture_action(
@@ -1196,41 +1527,51 @@ impl Render for BlockEditor {
             )
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::MoveDown, w, cx| {
-                    this.collapse_document_selection(true, w, cx)
+                    if this.menu {
+                        this.slash_menu.update(cx, |menu, cx| menu.navigate(1, cx));
+                        cx.stop_propagation();
+                    } else { this.collapse_document_selection(true, w, cx); }
                 }),
             )
+            .capture_action(cx.listener(|this, _: &gpui_component::input::Escape, _, cx| {
+                if this.menu {
+                    this.menu = false;
+                    this.slash_menu.update(cx, |menu, cx| menu.dismiss(cx));
+                    cx.stop_propagation(); cx.notify();
+                } else { cx.propagate(); }
+            }))
             .on_action(cx.listener(|this, _: &SelectDocument, w, cx| this.select_document(w, cx)))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::SelectAll, w, cx| {
                     this.select_document(w, cx)
                 }),
             )
-            .capture_action(cx.listener(|this, _: &gpui_component::input::Copy, _, cx| {
-                if let Some(text) = this.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+            .capture_action(cx.listener(|this, _: &gpui_component::input::Copy, w, cx| {
+                if this.copy_rich(false, w, cx) {
+                    cx.stop_propagation();
                 } else {
                     cx.propagate();
                 }
             }))
             .capture_action(cx.listener(|this, _: &gpui_component::input::Cut, w, cx| {
-                if let Some(text) = this.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    this.replace_text_selection("", w, cx);
+                if this.copy_rich(true, w, cx) {
+                    cx.stop_propagation();
                 } else {
                     cx.propagate();
                 }
             }))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::Paste, w, cx| {
-                    if this.text_selection.is_some() {
-                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                            this.replace_text_selection(&text, w, cx);
-                        }
+                    if this.paste_clipboard(false, w, cx) {
+                        cx.stop_propagation();
                     } else {
                         cx.propagate();
                     }
                 }),
             )
+            .on_action(cx.listener(|this, _: &PastePlain, w, cx| {
+                if this.paste_clipboard(true, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
+            }))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::Backspace, w, cx| {
                     if this.text_selection.is_some() {
@@ -1297,6 +1638,11 @@ impl Render for BlockEditor {
             .size_full(),
         );
         for i in 0..self.document.blocks.len() {
+            let key=self.document.blocks[i].id.clone();
+            let hover=self.hover_motion.entry(key.clone()).or_insert_with(||empire_ui::motion::Tween::new(0.));
+            hover.set(if !dragging && self.hovered_block.as_ref()==Some(&key) {1.} else {0.},120);
+            let hover_alpha=hover.value();
+            let hover_id=key;
             let block = &self.document.blocks[i];
             let id = block.id.clone();
             let interaction_id = id.clone();
@@ -1310,7 +1656,7 @@ impl Render for BlockEditor {
                         .focus_handle(cx)
                         .within_focused(window, cx)
                     || self.type_menu.read(cx).is_open());
-            let text_selection = self
+            let text_selection = !matches!(kind, Kind::Code(_)) && self
                 .selection_toolbar_index(cx)
                 .map(|first| first == i)
                 .unwrap_or_else(|| {
@@ -1368,6 +1714,11 @@ impl Render for BlockEditor {
                 }))
                 .relative()
                 .group("block-row")
+                .on_hover(cx.listener(move |this,inside:&bool,_,cx| {
+                    if *inside {this.hovered_block=Some(hover_id.clone());}
+                    else if this.hovered_block.as_ref()==Some(&hover_id) {this.hovered_block=None;}
+                    cx.notify();
+                }))
                 .rounded_md()
                 .when(selected, |row| row.bg(neutral(0x383838)))
                 .w_full()
@@ -1441,10 +1792,7 @@ impl Render for BlockEditor {
                 .gap_1()
                 .text_size(px(20.))
                 .text_color(neutral(0x999999))
-                .when(dragging, |d| d.opacity(0.))
-                .when(!dragging, |d| {
-                    d.opacity(0.).group_hover("block-row", |s| s.opacity(1.))
-                })
+                .opacity(hover_alpha)
                 .child(
                     div()
                         .id(SharedString::from(format!("add-{id}")))
@@ -1576,55 +1924,81 @@ impl Render for BlockEditor {
                 if matches!(kind, Kind::Heading(_)) {
                     input = input.font_weight(FontWeight::BOLD);
                 }
-                let mut cell = div().flex_1().min_w_0();
+                let mut cell = div().id(SharedString::from(format!("block-cell-{id}"))).flex_1().min_w_0();
                 if matches!(kind, Kind::Code(_)) {
-                    input = input.font_family("Menlo");
-                    cell = cell.bg(neutral(0x202020)).rounded_md().p_2();
+                    input = input.font_family("JetBrains Mono");
+                    let hover_code_id = id.clone();
+                    let geometry = self.row_bounds.clone();
+                    let measured = format!("__code-{id}");
+                    cell = cell.relative().bg(neutral(0x202020)).rounded_md().p(px(30.))
+                        .on_hover(cx.listener(move |this, inside: &bool, _, cx| {
+                            if *inside { this.hovered_code = Some(hover_code_id.clone()); }
+                            else if this.hovered_code.as_ref() == Some(&hover_code_id) { this.hovered_code = None; }
+                            cx.notify();
+                        }))
+                        .child(canvas(move |bounds, _, _| { geometry.borrow_mut().insert(measured.clone(), bounds); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+                        .child(input);
+                    if let Some(menu) = &self.inputs[&id].language_menu {
+                        if self.hovered_code.as_ref() == Some(&id) || menu.read(cx).is_open() {
+                            let copied = self.copied_code.as_ref().is_some_and(|(copied, _)| copied == &id);
+                            let copy_id = id.clone();
+                            let geometry = self.row_bounds.clone();
+                            let measured = format!("__code-tools-{id}");
+                            let copy_geometry = self.row_bounds.clone();
+                            let copy_measured = format!("__code-copy-{id}");
+                            let controls = div().id(SharedString::from(format!("code-tools-{id}")))
+                                .absolute().top(px(8.)).right(px(8.))
+                                .flex().items_center().gap_1().p_1().rounded_md()
+                                .bg(neutral(0x303030)).border_1().border_color(neutral(0x414141))
+                                .text_size(px(12.)).font_family(crate::assets::FONT_FAMILY).text_color(neutral(0xd4d4d4))
+                                .child(canvas(move |bounds, _, _| { geometry.borrow_mut().insert(measured.clone(), bounds); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+                                .child(menu.clone())
+                                .child(div().relative()
+                                    .child(canvas(move |bounds, _, _| { copy_geometry.borrow_mut().insert(copy_measured.clone(), bounds); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+                                    .child(Tooltip::new(SharedString::from(format!("copy-code-tip-{id}")), if copied { "Código copiado" } else { "Copiar código" })
+                                        .child(Button::icon(SharedString::from(format!("copy-code-{id}")), if copied { "iconoir/regular/check.svg" } else { "iconoir/regular/copy.svg" })
+                                            .size(ButtonSize::IconXs).variant(ButtonVariant::Ghost)
+                                            .on_click(cx.listener(move |this, _, w, cx| {
+                                                this.copy_code(&copy_id, cx);
+                                                if let Some(i) = this.document.blocks.iter().position(|b| b.id == copy_id) {
+                                                    this.state(i).update(cx, |state, cx| state.focus(w, cx));
+                                                }
+                                                cx.stop_propagation();
+                                            })) )));
+                            cell = cell.child(controls.with_animation(
+                                SharedString::from(format!("code-tools-enter-{id}")),
+                                Animation::new(std::time::Duration::from_millis(120)).with_easing(|t| 1. - (1. - t).powi(3)),
+                                |element, progress| element.opacity(progress),
+                            ));
+                        }
+                    }
+                    row = row.child(cell);
+                } else {
+                    row = row.child(cell.child(input));
                 }
-                row = row.child(cell.child(input));
             }
             if !dragging && (selected || text_selection) {
                 // The toolbar is already absolute and paints after this block/previous blocks.
                 // Menu and Tooltip manage their own deferred popups; nesting deferred
                 // elements would panic in GPUI when either popup opens.
-                row = row.child(self.toolbar(text_selection, cx));
+                row = row.child(self.toolbar(text_selection, cx).with_animation(
+                    SharedString::from(format!("toolbar-enter-{id}")),
+                    Animation::new(std::time::Duration::from_millis(120)).with_easing(|t|1.-(1.-t).powi(3)),
+                    |element,progress|element.opacity(progress),
+                ));
             }
             if !dragging && active && self.menu {
-                let mut menu = div()
-                    .id("slash-menu")
-                    .absolute()
-                    .top_full()
-                    .left_0()
-                    .w(px(330.))
-                    .max_w_full()
-                    .p_2()
-                    .rounded_lg()
-                    .bg(neutral(0x2c2c2c))
-                    .shadow_md()
-                    .occlude()
-                    .flex()
-                    .flex_wrap()
-                    .gap_1();
-                for (j, (label, kind)) in self.filtered_kinds().into_iter().enumerate() {
-                    menu =
-                        menu.child(
-                            Button::new(SharedString::from(format!("kind-{j}")), label)
-                                .size(ButtonSize::Sm)
-                                .variant(ButtonVariant::Ghost)
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    this.convert(kind.clone(), w, cx)
-                                })),
-                        );
-                }
-                row = row.child(deferred(menu).with_priority(3));
+                row = row.child(div().id("slash-menu-anchor").absolute().top_full().left(px(36.))
+                    .font_family(crate::assets::FONT_FAMILY).child(self.slash_menu.clone()));
             }
             root = root.child(row);
         }
+        if self.hover_motion.values().any(|t|t.moving()) {window.request_animation_frame();}
         root.child(
             div()
                 .id("document-end")
                 .w_full()
-                .h(px(self.font_size * 1.6 + 24.))
+                .h(px(self.end_space.max(self.font_size * 1.6 + 24.)))
                 .cursor(CursorStyle::IBeam)
                 .on_click(cx.listener(|this, _, w, cx| this.focus_document_end(w, cx))),
         )
@@ -2088,6 +2462,7 @@ pub fn verify_native_editor(cx: &mut App) {
     down(handle, first_start, cx);
     up(handle, first_start, cx);
     assert!(editor.read(cx).text_selection.is_none());
+    let original_clipboard = crate::macos::snapshot_clipboard();
     for key in ["cmd-a", "ctrl-a"] {
         event(
             handle,
@@ -2102,7 +2477,24 @@ pub fn verify_native_editor(cx: &mut App) {
             Some(plain.as_str()),
             "select-all shortcut must override the focused input"
         );
+        for copy_key in ["cmd-c", "ctrl-c"] {
+            cx.write_to_clipboard(ClipboardItem::new_string("clipboard sentinel".into()));
+            event(
+                handle,
+                PlatformInput::KeyDown(KeyDownEvent {
+                    keystroke: Keystroke::parse(copy_key).unwrap(),
+                    is_held: false,
+                }),
+                cx,
+            );
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+                Some(plain.as_str()),
+                "copy must preserve every selected block instead of being overwritten by the focused input"
+            );
+        }
     }
+    crate::macos::restore_clipboard(original_clipboard);
     // Formatting is uniform across blocks and does not alter their kinds.
     let toolbar = bounds("__toolbar", cx);
     let p = point(toolbar.left() + px(18.), toolbar.center().y);
@@ -2124,6 +2516,26 @@ pub fn verify_native_editor(cx: &mut App) {
     })
     .unwrap();
     assert_eq!(editor.read(cx).document.markdown(), rich);
+    // Inline code toggles on all selected blocks and survives Markdown reload.
+    for enabled in [true, false] {
+        frame(handle, cx);
+        event(handle, PlatformInput::KeyDown(KeyDownEvent {
+            keystroke: Keystroke::parse("cmd-e").unwrap(), is_held: false,
+        }), cx);
+        let current = editor.read(cx);
+        let restored = Document::parse(&current.document.markdown());
+        for (index, block) in current.document.blocks.iter().enumerate() {
+            assert_eq!(block.is_formatted(0..block.text.len(), "code"), enabled);
+            assert_eq!(restored.blocks[index].is_formatted(0..restored.blocks[index].text.len(), "code"), enabled);
+            assert_eq!(!inline_fonts(block).is_empty(), enabled);
+            assert_eq!(inline_styles(block).iter().any(|(_, style)| style.background_color.is_some()), enabled);
+        }
+    }
+    for _ in 0..2 {
+        cx.update_window(handle, |_, w, cx| {
+            editor.update(cx, |this, cx| this.history(false, w, cx));
+        }).unwrap();
+    }
     // Native typing replaces the whole selection in a single undoable document edit.
     let state = editor.read(cx).state(0);
     cx.update_window(handle, |_, w, cx| {
@@ -2201,8 +2613,231 @@ pub fn verify_native_editor(cx: &mut App) {
     up(handle, edge, cx);
     assert!(editor.read(cx).mouse_anchor.is_none());
     assert_eq!(editor.read(cx).document.markdown(), long);
-    cx.update_window(handle, |_, w, _| w.remove_window())
-        .unwrap();
+    let _isolated_clipboard = crate::macos::TestClipboard::new();
+    let rich_paste = "# Career\n\nHello **bold** *itálico* <u>ação</u> `code` [link](https://example.com)\n\n- one\n- two\n\n```rust\nlet x = 1;\n```";
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |this, cx| {
+            this.document_scroll = None;
+            this.set_value(rich_paste.into(), w, cx);
+            this.activate(1, 0, w, cx);
+        });
+    }).unwrap();
+    frame(handle, cx);
+    for key in ["cmd-a", "cmd-c"] {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    let html = crate::macos::clipboard_string("public.html").expect("standard HTML representation");
+    assert!(html.contains("<h1>Career</h1>") && html.contains("<strong>bold</strong>") && html.contains("<code>code</code>") && html.contains("<ul>") && html.contains("<pre>"));
+    let exported = crate::rich_clipboard::from_html(&html);
+    for (original, exported) in editor.read(cx).document.blocks.iter().zip(exported.iter()) {
+        let original = original.slice(0..original.text.len());
+        let exported = exported.slice(0..exported.text.len());
+        assert_eq!((&original.kind, &original.text, &original.spans), (&exported.kind, &exported.text, &exported.spans));
+    }
+    // An external editor offers HTML + plain text, with no Sparkpad metadata.
+    crate::macos::write_rich_clipboard("External\nRich ação\nitem".into(), "<h2>External</h2><p>Rich <strong><em>ação</em></strong> <u>underlined</u> <code>x &lt; 3</code></p><ul><li>item</li></ul>", None, cx);
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("ctrl-v").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks.len(), 3);
+    assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Heading(2));
+    let pasted = &editor.read(cx).document.blocks[1];
+    let action = pasted.text.find("ação").unwrap();
+    assert!(pasted.is_formatted(action..action + "ação".len(), "bold"));
+    assert!(pasted.is_formatted(action..action + "ação".len(), "italic"));
+    cx.update_window(handle, |_, w, cx| { editor.update(cx, |this, cx| this.history(false, w, cx)); }).unwrap();
+    assert_eq!(editor.read(cx).document.markdown(), rich_paste, "rich paste must be a single undoable edit");
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |this, cx| {
+            let start = this.document.blocks[1].text.find("bold").unwrap();
+            this.activate(1, start, w, cx);
+            this.state(1).update(cx, |s, cx| s.set_byte_selection(start..start + 4, cx));
+        });
+    }).unwrap();
+    frame(handle, cx);
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("cmd-c").unwrap(), is_held: false }), cx);
+    let partial_html = crate::macos::clipboard_string("public.html").unwrap();
+    assert!(partial_html.contains("<strong>bold</strong>") && !partial_html.contains("Career"));
+    crate::macos::write_rich_clipboard("novo".into(), "<p><em>novo</em></p>", None, cx);
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("cmd-v").unwrap(), is_held: false }), cx);
+    let pasted = &editor.read(cx).document.blocks[1];
+    let start = pasted.text.find("novo").unwrap();
+    assert!(pasted.is_formatted(start..start + 4, "italic"));
+    assert!(!pasted.is_formatted(start..start + 4, "bold"));
+    assert_eq!(editor.read(cx).document.blocks.len(), 5, "inline rich paste must preserve surrounding blocks");
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |this, cx| this.set_value("```js\nconst value = 42;\n```".into(), w, cx));
+    }).unwrap();
+    frame(handle, cx);
+    let code_id = editor.read(cx).document.blocks[0].id.clone();
+    let code_bounds = editor.read(cx).row_bounds.borrow()[&format!("__code-{code_id}")];
+    let resting = editor.read(cx).state(0).read(cx).byte_offset_for_point(point(code_bounds.left() + px(30.), code_bounds.top() + px(30.)));
+    assert!(!editor.read(cx).row_bounds.borrow().contains_key(&format!("__code-tools-{code_id}")), "code controls must be hidden without hover");
+    movement(handle, point(code_bounds.left() + px(4.), code_bounds.top() + px(4.)), false, cx);
+    let hovered = editor.read(cx).row_bounds.borrow()[&format!("__code-{code_id}")];
+    assert_eq!(code_bounds, hovered, "hover controls must not change code geometry");
+    let controls = editor.read(cx).row_bounds.borrow()[&format!("__code-tools-{code_id}")];
+    assert!((controls.right() - code_bounds.right() + px(8.)).abs() <= px(1.5));
+    assert!((controls.top() - code_bounds.top() - px(8.)).abs() <= px(1.5));
+    assert_eq!(resting, editor.read(cx).state(0).read(cx).byte_offset_for_point(point(code_bounds.left() + px(30.), code_bounds.top() + px(30.))));
+    let copy_bounds = editor.read(cx).row_bounds.borrow()[&format!("__code-copy-{code_id}")];
+    down(handle, copy_bounds.center(), cx);
+    up(handle, copy_bounds.center(), cx);
+    assert_eq!(crate::macos::clipboard_string("public.utf8-plain-text").as_deref(), Some("const value = 42;"));
+    cx.update_window(handle, |_, w, cx| assert!(editor.read(cx).state(0).read(cx).focus_handle(cx).is_focused(w), "copy control keeps code editing focus")).unwrap();
+    movement(handle, point(px(0.), px(0.)), false, cx);
+    assert!(!editor.read(cx).row_bounds.borrow().contains_key(&format!("__code-tools-{code_id}")));
+    movement(handle, point(code_bounds.left() + px(4.), code_bounds.top() + px(4.)), false, cx);
+    let language_menu = editor.read(cx).inputs[&code_id].language_menu.clone().unwrap();
+    cx.update_window(handle, |_, w, cx| language_menu.read(cx).focus_handle(cx).focus(w)).unwrap();
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("enter").unwrap(), is_held: false }), cx);
+    movement(handle, point(px(0.), px(0.)), false, cx);
+    assert!(language_menu.read(cx).is_open(), "dropdown must remain usable outside code hover");
+    assert!(editor.read(cx).row_bounds.borrow().contains_key(&format!("__code-tools-{code_id}")));
+    for key in std::iter::repeat("down").take(crate::code_highlight::LANGUAGES.iter().position(|(id, _)| *id == "rust").unwrap()).chain(std::iter::once("enter")) {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Code("rust".into()), "language menu must update the targeted code block");
+    assert!(editor.read(cx).value().starts_with("```rust\n"));
+    assert!(matches!(&Document::parse(editor.read(cx).value().as_ref()).blocks[0].kind, Kind::Code(lang) if lang == "rust"));
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |this, cx| this.history(false, w, cx));
+    }).unwrap();
+    assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Code("js".into()), "one undo restores the previous language");
+    cx.update_window(handle, |_, w, cx| {
+        editor.update(cx, |this, cx| this.activate(0, 0, w, cx));
+    }).unwrap();
+    frame(handle, cx);
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("tab").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks[0].text, "  const value = 42;");
+    cx.update_window(handle, |_, w, cx| assert!(editor.read(cx).state(0).read(cx).focus_handle(cx).is_focused(w), "Tab must keep focus in the code input")).unwrap();
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("shift-tab").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks[0].text, "const value = 42;");
+    movement(handle, point(code_bounds.left() + px(4.), code_bounds.top() + px(4.)), false, cx);
+    cx.update_window(handle, |_, w, cx| language_menu.read(cx).focus_handle(cx).focus(w)).unwrap();
+    for key in std::iter::once("enter").chain(std::iter::repeat("down").take(crate::code_highlight::LANGUAGES.iter().position(|(id, _)| *id == "tsx").unwrap())).chain(std::iter::once("enter")) {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Code("tsx".into()));
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+        this.set_value("```tsx\nconst ação = () => (\n  <div>Hello</div>\n);\n```".into(), w, cx);
+        this.activate(0, 0, w, cx);
+        this.state(0).update(cx, |state, cx| state.set_byte_selection(0..this.document.blocks[0].text.find("\n);").unwrap(), cx));
+    })).unwrap();
+    frame(handle, cx);
+    let before = editor.read(cx).document.blocks[0].text.clone();
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("tab").unwrap(), is_held: false }), cx);
+    assert!(editor.read(cx).document.blocks[0].text.starts_with("  const ação = () => (\n    <div>"));
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("shift-tab").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks[0].text, before);
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| this.history(false, w, cx))).unwrap();
+    assert!(editor.read(cx).document.blocks[0].text.starts_with("  const"));
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| this.history(false, w, cx))).unwrap();
+    assert_eq!(editor.read(cx).document.blocks[0].text, before);
+    editor.update(cx, |this, cx| {
+        let id = this.document.blocks[0].id.clone();
+        this.copy_code(&id, cx);
+    });
+    assert_eq!(crate::macos::clipboard_string("public.utf8-plain-text").as_deref(), Some(before.as_str()));
+    assert!(crate::macos::clipboard_string("public.html").is_none(), "code copy must not retain stale HTML");
+    assert!(crate::macos::clipboard_string("dev.mpires.sparkpad.markdown").is_none(), "code copy must not include fences");
+    let code = "const Card = () => <div>ação</div>;\n// second line";
+    let fixture = format!("before\n\n```tsx\n{code}\n```\n\nafter");
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+        this.set_value(fixture.clone(), w, cx);
+        this.activate(1, 0, w, cx);
+    })).unwrap();
+    frame(handle, cx);
+    for select_all in ["cmd-a", "ctrl-a"] {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(select_all).unwrap(), is_held: false }), cx);
+        assert!(editor.read(cx).text_selection.is_none(), "select all in code must stay local");
+        assert_eq!(editor.read(cx).state(1).read(cx).selection_range(), 0..code.len());
+        assert!(editor.read(cx).state(0).read(cx).selection_range().is_empty());
+        assert!(editor.read(cx).state(2).read(cx).selection_range().is_empty());
+        assert!(!editor.read(cx).row_bounds.borrow().contains_key("__toolbar"), "code text selection must not open formatting toolbar");
+    }
+    let history = editor.read(cx).undo.len();
+    for key in ["cmd-b", "cmd-i", "cmd-u", "cmd-e"] {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    assert_eq!(editor.read(cx).document.markdown(), fixture);
+    assert_eq!(editor.read(cx).undo.len(), history, "formatting code must not create edits");
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("cmd-c").unwrap(), is_held: false }), cx);
+    assert_eq!(crate::macos::clipboard_string("public.utf8-plain-text").as_deref(), Some(code));
+    assert!(crate::macos::clipboard_string("public.html").is_none());
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+        this.apply_text_selection(TextSelection { anchor: (1, 2), head: (1, 8) }, cx);
+        this.format("strike", w, cx);
+    })).unwrap();
+    frame(handle, cx);
+    assert!(editor.read(cx).selection_toolbar_index(cx).is_none());
+    assert!(!editor.read(cx).row_bounds.borrow().contains_key("__toolbar"));
+    assert_eq!(editor.read(cx).document.markdown(), fixture);
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| this.activate(0, 0, w, cx))).unwrap();
+    frame(handle, cx);
+    for key in ["cmd-a", "cmd-b"] {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    assert!(editor.read(cx).document.blocks[0].is_formatted(0..6, "bold"));
+    assert!(editor.read(cx).document.blocks[2].is_formatted(0..5, "bold"));
+    assert!(!editor.read(cx).document.blocks[1].is_formatted(0..code.len(), "bold"), "document formatting must skip code");
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| this.activate(1, 0, w, cx))).unwrap();
+    frame(handle, cx);
+    for key in ["cmd-a", "cmd-x"] {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    assert_eq!(editor.read(cx).document.blocks.len(), 3);
+    assert_eq!(editor.read(cx).document.blocks[1].text, "");
+    assert_eq!(editor.read(cx).document.blocks[1].kind, Kind::Code("tsx".into()));
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("backspace").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks.len(), 3, "backspace in empty code must not merge notes");
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("cmd-v").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks[1].text, code);
+    assert_eq!(editor.read(cx).document.blocks[1].kind, Kind::Code("tsx".into()));
+    for key in ["cmd-a", "enter"] {
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse(key).unwrap(), is_held: false }), cx);
+    }
+    assert_eq!(editor.read(cx).document.blocks[1].text, "\n", "Enter replaces the code selection in place");
+    assert_eq!(editor.read(cx).document.blocks[1].kind, Kind::Code("tsx".into()));
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("cmd-z").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks[1].text, code);
+    println!("Native code editing isolation verified: Cmd/Ctrl+A, no formatting toolbar or marks, literal copy/cut/paste, mixed document formatting and empty code preservation.");
+    println!("Native code hover verified: absolute inset controls, unchanged geometry, hover enter/leave, real copy button and interactive dropdown outside hover.");
+    println!("Native code controls verified: Tab/Shift+Tab, multiline indentation, focus, undo, TSX dropdown and literal code clipboard.");
+    println!("Native code language selector verified: keyboard dropdown, Markdown persistence and undo.");
+    // Slash commands keep the native input focused while the menu owns arrow navigation.
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+        this.set_value(String::new(), w, cx);
+        this.activate(0, 0, w, cx);
+        this.state(0).update(cx, |state, cx| state.replace("/", w, cx));
+    })).unwrap();
+    frame(handle, cx);
+    let slash = editor.read(cx).slash_menu.clone();
+    assert!(editor.read(cx).menu && slash.read(cx).is_open(), "slash opens the command dropdown");
+    assert_eq!(slash.read(cx).highlighted(), Some(1));
+    cx.update_window(handle, |_, w, cx| assert!(editor.read(cx).state(0).read(cx).focus_handle(cx).is_focused(w))).unwrap();
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("down").unwrap(), is_held: false }), cx);
+    assert_eq!(slash.read(cx).highlighted(), Some(2));
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("up").unwrap(), is_held: false }), cx);
+    assert_eq!(slash.read(cx).highlighted(), Some(1));
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("down").unwrap(), is_held: false }), cx);
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("enter").unwrap(), is_held: false }), cx);
+    assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Heading(1));
+    assert_eq!(editor.read(cx).document.blocks[0].text, "");
+    assert!(!editor.read(cx).menu && !slash.read(cx).is_open());
+    cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+        this.set_value(String::new(), w, cx); this.activate(0, 0, w, cx);
+        this.state(0).update(cx, |state, cx| state.replace("/", w, cx));
+    })).unwrap();
+    frame(handle, cx);
+    cx.update_window(handle, |_, w, cx| editor.read(cx).state(0).update(cx, |state, cx| state.replace("código", w, cx))).unwrap();
+    frame(handle, cx);
+    assert_eq!(editor.read(cx).filtered_kinds().len(), 1);
+    assert_eq!(slash.read(cx).highlighted(), Some(1));
+    event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("escape").unwrap(), is_held: false }), cx);
+    assert!(!editor.read(cx).menu && !slash.read(cx).is_open());
+    assert_eq!(editor.read(cx).document.blocks[0].text, "/código", "Escape only dismisses the menu");
+    println!("Native slash dropdown verified: input focus, filtering, arrows, Enter conversion and Escape dismissal.");
+    cx.update_window(handle, |_, w, _| w.remove_window()).unwrap();
+    println!("Native rich clipboard verified: standard HTML export, external formatted HTML paste, partial selections, Unicode, surrounding styles and undo.");
     println!("Native editor verified: drag/drop, toolbar, implicit insertion, bidirectional document selection, Cmd/Ctrl+A, formatting, native replacement, deletion and undo.");
 }
 
@@ -2294,6 +2929,22 @@ pub fn verify_native_selection_async(cx: &mut App) {
 mod tests {
     use super::{inline_styles, Document};
     use gpui::{FontStyle, FontWeight, KeyBindingContextPredicate, KeyContext};
+    #[test]
+    fn code_indentation_preserves_unicode_ranges_and_line_boundaries() {
+        use super::code_indent;
+        let text = "ação\ntexto\nlast";
+        let end = text.find("last").unwrap();
+        let (indented, range) = code_indent(text, 0..end, false);
+        assert_eq!(indented, "  ação\n  texto\nlast");
+        let (restored, restored_range) = code_indent(&indented, range, true);
+        assert_eq!(restored, text);
+        assert_eq!(restored_range, 0..end);
+        assert_eq!(code_indent("\tx\n x", 0..5, true).0, "x\nx");
+        assert_eq!(code_indent(" x", 0..0, true), ("x".into(), 0..0));
+        assert_eq!(code_indent("x", 1..1, true), ("x".into(), 1..1));
+        assert_eq!(code_indent("", 0..0, false), ("  ".into(), 2..2));
+        assert_eq!(code_indent("coração", 2..2, false).1, 4..4);
+    }
     #[test]
     fn insertion_slots_cover_both_directions_and_gaps() {
         use super::insertion_target;

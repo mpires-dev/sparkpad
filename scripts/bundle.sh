@@ -23,6 +23,7 @@ cp assets/fonts/Libron-OFL.txt "$app/Contents/Resources/Libron-OFL.txt"
 cp assets/fonts/JetBrains-Mono-OFL.txt "$app/Contents/Resources/JetBrains-Mono-OFL.txt"
 cp assets/fonts/OFL.txt "$app/Contents/Resources/NV-Legible-Next-OFL.txt"
 cp assets/app/Sparkpad.icns "$app/Contents/Resources/Sparkpad.icns"
+cp assets/syntax/*-LICENSE.txt "$app/Contents/Resources/"
 cp LICENSE "$app/Contents/Resources/Sparkpad-LICENSE"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -7,6 +7,9 @@ mod assets;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod block_editor;
 mod blocks;
+mod rich_clipboard;
+#[cfg(feature = "gui")]
+mod code_highlight;
 mod covers;
 mod icon_catalog;
 mod preferences;
@@ -16,8 +19,11 @@ mod mcp;
 mod mcp_presence;
 mod store;
 mod note_tree;
+mod sidebar_drag;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod ui;
+#[cfg(all(feature = "gui", target_os = "macos"))]
+mod ui_motion;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
