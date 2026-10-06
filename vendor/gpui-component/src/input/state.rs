@@ -274,6 +274,7 @@ pub struct InputState {
     pub(super) mode: InputMode,
     pub(super) text: Rope,
     pub(super) inline_highlights: Vec<(Range<usize>, HighlightStyle)>,
+    pub(super) inline_font_ranges: Vec<(Range<usize>, SharedString)>,
     pub(super) block_mode: bool,
     pub(super) text_wrapper: TextWrapper,
     pub(super) history: History<Change>,
@@ -395,6 +396,7 @@ impl InputState {
             focus_handle: focus_handle.clone(),
             text: "".into(),
             inline_highlights: Vec::new(),
+            inline_font_ranges: Vec::new(),
             block_mode: false,
             text_wrapper: TextWrapper::new(text_style.font(), window.rem_size(), None),
             blink_cursor,
@@ -1671,6 +1673,12 @@ impl InputState {
     /// App-local rich block editing. Styles must cover the entire UTF-8 text.
     pub fn block_mode(mut self, enabled: bool) -> Self { self.block_mode = enabled; self }
     pub fn set_inline_highlights(&mut self, styles: Vec<(Range<usize>, HighlightStyle)>, cx: &mut Context<Self>) { self.inline_highlights = styles; cx.notify(); }
+    /// Override the font of complete inline highlight runs, using UTF-8 ranges.
+    pub fn set_inline_font_ranges(&mut self, mut fonts: Vec<(Range<usize>, SharedString)>, cx: &mut Context<Self>) {
+        fonts.sort_by_key(|(range, _)| range.start);
+        self.inline_font_ranges = fonts;
+        cx.notify();
+    }
     pub fn selection_range(&self) -> Range<usize> { self.selected_range.start..self.selected_range.end }
     /// Hit testing for a document selection spanning several native inputs.
     pub fn byte_offset_for_point(&self, position: Point<Pixels>) -> usize {

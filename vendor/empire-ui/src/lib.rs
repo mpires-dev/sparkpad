@@ -147,3 +147,4 @@ pub use theme::{set_theme, theme_mode, Palette, ThemeMode};
 pub use toggle::{Toggle, ToggleSize, ToggleVariant};
 pub use toggle_group::{ToggleGroup, ToggleGroupEvent, ToggleGroupItem, ToggleGroupMode};
 pub use tooltip::Tooltip;
+pub mod motion;

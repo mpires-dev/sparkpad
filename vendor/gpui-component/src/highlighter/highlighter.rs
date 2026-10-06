@@ -44,7 +44,9 @@ pub struct SyntaxHighlighter {
 struct TextProvider<'a>(&'a Rope);
 struct ByteChunks<'a> {
     cursor: ChunkCursor<'a>,
+    start: usize,
     end: usize,
+    done: bool,
 }
 impl<'a> tree_sitter::TextProvider<&'a [u8]> for TextProvider<'a> {
     type I = ByteChunks<'a>;
@@ -55,7 +57,9 @@ impl<'a> tree_sitter::TextProvider<&'a [u8]> for TextProvider<'a> {
 
         ByteChunks {
             cursor,
+            start: range.start,
             end: range.end,
+            done: false,
         }
     }
 }
@@ -67,8 +71,18 @@ impl<'a> Iterator for ByteChunks<'a> {
         let cursor = &mut self.cursor;
         let end = self.end;
 
-        if cursor.next() && cursor.byte_offset() < end {
-            Some(cursor.chunk().as_bytes())
+        // Ropey cursors already sit on the first chunk; advancing first
+        // skips every predicate token in a single-chunk code block.
+        if !self.done && cursor.byte_offset() < end {
+            // Query predicates must receive only the captured node text, not
+            // its entire rope chunk. Otherwise regex/eq predicates fail or
+            // match unrelated text elsewhere in the block.
+            let bytes = cursor.chunk().as_bytes();
+            let offset = cursor.byte_offset();
+            let start = self.start.saturating_sub(offset).min(bytes.len());
+            let end = (end - offset).min(bytes.len());
+            self.done = !cursor.next();
+            Some(&bytes[start..end])
         } else {
             None
         }
@@ -413,7 +427,9 @@ impl SyntaxHighlighter {
                     // last_range: 213..220, last_highlight_name: Some("string")
                     highlights.push(HighlightItem::new(
                         node_range,
-                        last_highlight_name.unwrap_or(highlight_name),
+                        // Keep the later semantic capture. Preserving the earlier
+                        // predicate capture (e.g. @clean) discards actual colors.
+                        highlight_name,
                     ));
                 } else {
                     highlights.push(HighlightItem::new(node_range, highlight_name.clone()));

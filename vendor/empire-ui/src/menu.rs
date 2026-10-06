@@ -994,6 +994,9 @@ enum MenuTrigger {
 
 /// O menu suspenso (gatilho + popup de itens).
 pub struct Menu {
+    scroll_area: bool,
+    smooth:bool,
+    fade:crate::motion::Tween,
     /// As linhas, na ordem em que aparecem.
     items: Vec<MenuItem>,
     /// Se o popup está aberto.
@@ -1039,8 +1042,10 @@ impl Menu {
     /// troque com [`Self::trigger_button`] ou [`Self::trigger`]).
     pub fn new(items: Vec<MenuItem>, cx: &mut Context<Self>) -> Self {
         Self {
+            scroll_area: false,
             items,
             open: false,
+            smooth:false,fade:crate::motion::Tween::new(0.),
             highlighted: None,
             trigger: MenuTrigger::Button(SharedString::from("Menu")),
             side: MenuSide::default(),
@@ -1133,12 +1138,19 @@ impl Menu {
             .position(|i| i.group() == Some(group) && i.is_checked() == Some(true))
     }
 
-    /// Abre ou fecha o popup. **Emite** [`MenuEvent::OpenChange`] se mudou.
+    /// Close immediately when another popup takes its place.
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
+        self.set_open(false,cx);self.fade=crate::motion::Tween::new(0.);cx.notify();
+    }
+    /// Enable interruptible entrance and exit fades. Off by default.
+    pub fn motion(mut self, enabled:bool)->Self {self.smooth=enabled;self}
+
     pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         if self.open == open {
             return;
         }
         self.open = open;
+        self.fade.set(if open {1.} else {0.},160);
         if !open {
             // Fechar limpa o destaque: reabrir tem que começar do zero, senão o item que o cursor
             // tocou por último volta aceso sem o cursor estar nele.
@@ -1203,6 +1215,41 @@ impl Menu {
         cx.notify();
     }
 
+    /// Draw the design system scrollbar for long command menus.
+    pub fn scroll_area(mut self, enabled: bool) -> Self { self.scroll_area = enabled; self }
+
+    /// Navigate a menu from an associated text input without moving its focus.
+    pub fn navigate(&mut self, direction: isize, cx: &mut Context<Self>) {
+        if !self.open { return; }
+        let target = step_index(self.highlighted, &activatable_mask(&self.items), direction);
+        if let Some(index) = target { self.scroll_highlight(index); }
+        self.highlight(target, cx);
+    }
+
+    fn scroll_highlight(&self, index: usize) {
+        if !self.scroll_area { self.list_scroll.scroll_to_item(index); return; }
+        let row_height = |item: &MenuItem| match item.kind {
+            MenuItemKind::Label => SMALL_LINE_HEIGHT + LABEL_PAD_Y * 2.,
+            MenuItemKind::Separator => SEPARATOR_HEIGHT + SEPARATOR_MARGIN_Y * 2.,
+            _ => ITEM_MIN_HEIGHT,
+        };
+        let top: f32 = self.items[..index].iter().map(row_height).sum();
+        let bottom = top + row_height(&self.items[index]);
+        let offset = self.list_scroll.offset();
+        let visible_top = -f32::from(offset.y);
+        let height = f32::from(self.list_scroll.bounds().size.height);
+        let target = if top < visible_top { top } else if bottom > visible_top + height { bottom - height } else { visible_top };
+        self.list_scroll.set_offset(point(offset.x, px(-target.max(0.))));
+    }
+
+    /// Activate the highlighted item (or the first enabled result).
+    pub fn choose_highlighted(&mut self, cx: &mut Context<Self>) {
+        if !self.open { return; }
+        if let Some(index) = self.highlighted.or_else(|| edge_index(&activatable_mask(&self.items), false)) {
+            self.activate(index, cx);
+        }
+    }
+
     /// Onde o popup foi medido no último frame em que esteve aberto (BORDER box, em pixels de
     /// janela). `None` enquanto ele nunca abriu.
     pub fn popup_bounds(&self) -> Option<Bounds<Pixels>> {
@@ -1259,7 +1306,8 @@ impl Menu {
         }
 
         if closes_on_click(kind, explicit) {
-            self.set_open(false, cx);
+            // Return focus immediately after an action; never leave a fading menu over its result.
+            if self.smooth {self.dismiss(cx);} else {self.set_open(false,cx);}
         }
         cx.notify();
     }
@@ -1330,7 +1378,7 @@ impl Menu {
         crate::focus_ring::keyboard_used(window);
         // Num menu mais alto que o espaço livre, andar com as setas tem que trazer o item pra
         // dentro da vista — o índice do filho na lista rolável é o próprio índice do item.
-        self.list_scroll.scroll_to_item(destino);
+        self.scroll_highlight(destino);
         self.highlight(Some(destino), cx);
     }
 
@@ -1588,6 +1636,8 @@ impl Menu {
         // A superfície. ⚠️ NÃO tem `overflow_hidden`: recortaria o bisel (que é filho absoluto
         // sobre a borda). Quem rola é a lista de dentro.
         let mut surface = div()
+            .opacity(if self.smooth {self.fade.value()} else {1.})
+            .when(!self.open,|d|d.capture_any_mouse_down(cx.listener(|this,event:&MouseDownEvent,_,cx| {if this.popup_bounds.is_some_and(|b|b.contains(&event.position)) {cx.stop_propagation();}})))
             .relative()
             // `occlude`: captura o mouse, não vaza clique pro conteúdo atrás.
             .occlude()
@@ -1607,19 +1657,17 @@ impl Menu {
             None => surface.min_w(px(MIN_WIDTH)),
         };
 
-        let surface = surface
-            .child(
-                div()
-                    .id(("menu-list", self.id))
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .p(px(LIST_PAD))
-                    .max_h(px(max_h))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.list_scroll)
-                    .children(items),
-            )
+        let list: AnyElement = if self.scroll_area {
+            crate::scroll_area::ScrollArea::new(("menu-scroll", self.id), &self.list_scroll)
+                .fade(false).radius(RADIUS)
+                .w_full().h(px((self.items.len() as f32 * 28. + LIST_PAD * 2.).min(max_h.min(360.))))
+                .children(items).into_any_element()
+        } else {
+            div().id(("menu-list", self.id)).flex().flex_col().w_full()
+                .p(px(LIST_PAD)).max_h(px(max_h)).overflow_y_scroll()
+                .track_scroll(&self.list_scroll).children(items).into_any_element()
+        };
+        let surface = surface.child(list)
             .child(bevel_overlay())
             .on_mouse_down_out(cx.listener(|this, e: &MouseDownEvent, _window, cx| {
                 let pos = e.position;
@@ -1702,6 +1750,7 @@ impl Focusable for Menu {
 
 impl Render for Menu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.smooth && self.fade.moving() {window.request_animation_frame();}
         let open = self.open;
         // Ancorado no ponteiro (menu de contexto) NÃO há gatilho: quem abre é a região do
         // `crate::context_menu`, que embrulha os filhos de quem chama. Sem gatilho esta raiz fica
@@ -1730,7 +1779,7 @@ impl Render for Menu {
             }))
             .children(trigger);
 
-        if open {
+        if open || (self.smooth && self.fade.moving()) {
             root = root.child(self.render_popup(window, cx));
         }
 

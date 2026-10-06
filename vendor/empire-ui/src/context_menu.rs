@@ -103,6 +103,7 @@
 //! - **`onOpenChangeComplete`** e as animações: a referência não especifica nenhuma (ver a mesma nota
 //!   no [`crate::menu`]).
 
+use gpui::{Bounds,Pixels,prelude::FluentBuilder};
 use crate::menu::{Menu, MenuAlign, MenuEvent, MenuItem, MenuSide};
 use gpui::{
     canvas, div, px, AnyElement, App, Context, Div, Entity, Focusable, InteractiveElement,
@@ -163,6 +164,7 @@ pub struct ContextMenu {
     base: Div,
     /// O estado do menu — o popup, os itens e o teclado moram nele.
     menu: Entity<Menu>,
+    mount_menu: bool,
 }
 
 impl ContextMenu {
@@ -183,12 +185,16 @@ impl ContextMenu {
     }
 
     /// A **região**, no render. Estilize como estilizaria o seu `div()`.
+    /// Share one popup host between virtualized regions. Mount the menu entity once in the parent.
+    pub fn detached(mut self)->Self {self.mount_menu=false;self}
+
     pub fn new(menu: &Entity<Menu>) -> Self {
         Self {
             // `relative` porque as duas peças que a região acrescenta são absolutas: o `canvas` que
             // a mede e a caixa 0×0 que hospeda o popup.
             base: div().relative(),
             menu: menu.clone(),
+            mount_menu:true,
         }
     }
 }
@@ -213,7 +219,8 @@ impl InteractiveElement for ContextMenu {
 
 impl RenderOnce for ContextMenu {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let Self { base, menu } = self;
+        let Self { base, menu, mount_menu } = self;
+        let region=std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
 
         base
             // --- O clique DIREITO: abre no ponteiro, ou move o popup que já está aberto ----------
@@ -226,6 +233,7 @@ impl RenderOnce for ContextMenu {
             // retângulo que o `canvas` abaixo mede.
             .on_mouse_down(MouseButton::Right, {
                 let menu = menu.clone();
+                let region=region.clone();
                 move |event: &MouseDownEvent, window, cx| {
                     // Abrir com o ponteiro não pode acender anel de foco (ver `crate::focus_ring`).
                     crate::focus_ring::pointer_used(window);
@@ -234,7 +242,7 @@ impl RenderOnce for ContextMenu {
                     // foco é o que todo menu faz; devolvê-lo ao fechar está declarado como ausente
                     // no doc do módulo.
                     menu.read(cx).focus_handle(cx).focus(window);
-                    menu.update(cx, |menu, cx| menu.open_at(event.position, cx));
+                    menu.update(cx, |menu, cx| {menu.set_anchor_region(region.get());menu.open_at(event.position, cx);});
                     // Consome o clique: numa região dentro de outra região, quem ganha é a de
                     // dentro (a bolha vai do topo pra trás), e sem isto as duas abririam de uma vez.
                     cx.stop_propagation();
@@ -262,8 +270,10 @@ impl RenderOnce for ContextMenu {
                 canvas(
                     {
                         let menu = menu.clone();
+                        let region=region.clone();
                         move |bounds, _window, cx| {
-                            menu.update(cx, |menu, _| menu.set_anchor_region(bounds));
+                            region.set(bounds);
+                            if mount_menu {menu.update(cx, |menu, _| menu.set_anchor_region(bounds));}
                         }
                     },
                     |_, _, _, _| {},
@@ -279,7 +289,7 @@ impl RenderOnce for ContextMenu {
             // nenhum) não entra no fluxo e não acrescenta uma linha nem um `gap` ao layout de quem
             // chama. O popup em si é `deferred(anchored(..))` em coordenadas de JANELA, então não
             // liga pra onde este ponto está.
-            .child(
+            .when(mount_menu,|base| base.child(
                 div()
                     .absolute()
                     .top_0()
@@ -287,7 +297,7 @@ impl RenderOnce for ContextMenu {
                     .w(px(0.0))
                     .h(px(0.0))
                     .child(menu),
-            )
+            ))
     }
 }
 

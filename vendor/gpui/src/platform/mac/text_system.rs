@@ -502,6 +502,7 @@ impl MacTextSystemState {
                 _ => {
                     runs.push(ShapedRun {
                         font_id,
+                        font_size: None,
                         glyphs: Vec::with_capacity(run.glyph_count().try_into().unwrap_or(0)),
                     });
                     &mut runs.last_mut().unwrap().glyphs

@@ -670,12 +670,7 @@ impl TextElement {
         let visible_range_offset = &last_layout.visible_range_offset;
 
         if is_single_line {
-            let shaped_line = window.text_system().shape_line(
-                display_text.to_string().into(),
-                font_size,
-                &runs,
-                None,
-            );
+            let shaped_line = Self::shape_inline_line(state, display_text.to_string().into(), font_size, runs, 0, window);
 
             return vec![LineLayout::new().lines(smallvec::smallvec![shaped_line])];
         }
@@ -727,9 +722,8 @@ impl TextElement {
                 };
 
                 let sub_line: SharedString = line[range.clone()].to_string().into();
-                let shaped_line = window
-                    .text_system()
-                    .shape_line(sub_line, font_size, &line_runs, None);
+                let shaped_line = Self::shape_inline_line(state, sub_line, font_size, &line_runs,
+                    visible_range_offset.start + offset + range.start, window);
 
                 wrapped_lines.push(shaped_line);
             }
@@ -742,6 +736,16 @@ impl TextElement {
         }
 
         lines
+    }
+
+    fn shape_inline_line(state: &InputState, text: gpui::SharedString, font_size: Pixels, runs: &[TextRun], offset: usize, window: &mut Window) -> gpui::ShapedLine {
+        let end = offset + text.len();
+        let first = state.inline_font_ranges.partition_point(|(range, _)| range.end <= offset);
+        let ranges: Vec<_> = state.inline_font_ranges[first..].iter()
+            .take_while(|(range, _)| range.start < end)
+            .map(|(range, _)| range.start.max(offset) - offset..range.end.min(end) - offset).collect();
+        window.text_system().shape_line(text, font_size, runs, None)
+            .with_scaled_ranges(&ranges, 0.85, px(4.))
     }
 
     /// First usize is the offset of skipped.
@@ -1046,6 +1050,14 @@ impl Element for TextElement {
 
                 runs.extend(highlight_styles.iter().map(|(range, style)| {
                     let mut run = text_style.clone().highlight(*style).to_run(range.len());
+                    let font_index = state.inline_font_ranges.partition_point(|(font_range, _)| font_range.end <= range.start);
+                    if let Some((font_range, family)) = state.inline_font_ranges.get(font_index) {
+                        if font_range.start <= range.start && font_range.end >= range.end {
+                            run.font.family = family.clone();
+                            // The padded inline chip is painted below, rather than a full-height text background.
+                            run.background_color = None;
+                        }
+                    }
                     if let Some(ime_marked_range) = &state.ime_marked_range {
                         if range.start >= ime_marked_range.start
                             && range.end <= ime_marked_range.end
@@ -1361,6 +1373,63 @@ impl Element for TextElement {
         // Paint indent guides
         if let Some(path) = prepaint.indent_guides_path.take() {
             window.paint_path(path, cx.theme().border.opacity(0.85));
+        }
+
+        // Inline backgrounds must be drawn before selection and text.
+        let mut background_offset_y = mask_offset_y + invisible_top_padding;
+        let code_ranges = self.state.read(cx).inline_font_ranges.clone();
+        let code_styles = self.state.read(cx).inline_highlights.clone();
+        let mut code_offset = prepaint.last_layout.visible_range_offset.start;
+        for (ix, line) in prepaint.last_layout.lines.iter().enumerate() {
+            let p = point(origin.x + prepaint.last_layout.line_number_width, origin.y + background_offset_y);
+            for (wrapped_ix, wrapped_line) in line.wrapped_lines.iter().enumerate() {
+                let wrapped_origin = p + point(px(0.), wrapped_ix * line_height);
+                _ = wrapped_line.paint_background(wrapped_origin, line_height, window, cx);
+                let end = code_offset + wrapped_line.len();
+                let first = code_ranges.partition_point(|(range, _)| range.end <= code_offset);
+                for (range, _) in code_ranges[first..].iter().take_while(|(range, _)| range.start < end) {
+                    let start = range.start.max(code_offset);
+                    let stop = range.end.min(end);
+                    let style_index = code_styles.partition_point(|(range, _)| range.end <= start);
+                    if let Some(background) = code_styles.get(style_index).and_then(|(_, style)| style.background_color) {
+                        let left = wrapped_line.x_for_index(start - code_offset) - px(4.);
+                        let right = wrapped_line.x_for_index(stop - code_offset);
+                        let baseline = (line_height - wrapped_line.ascent - wrapped_line.descent) / 2. + wrapped_line.ascent;
+                        // Center the chip around the visible glyphs, not the surrounding
+                        // font's ascent (which includes unused space above lowercase text).
+                        let mut ink_top: Option<Pixels> = None;
+                        let mut ink_bottom: Option<Pixels> = None;
+                        for run in &wrapped_line.runs {
+                            let font_size = run.font_size.unwrap_or(wrapped_line.font_size);
+                            for glyph in run.glyphs.iter().filter(|glyph| glyph.index >= start - code_offset && glyph.index < stop - code_offset) {
+                                if let Some(ch) = wrapped_line.text[glyph.index..].chars().next() {
+                                    if let Ok(ink) = window.text_system().typographic_bounds(run.font_id, font_size, ch) {
+                                        if ink.size.height > px(0.) {
+                                            // Font bounds use an upward Y axis; the screen uses downward Y.
+                                            let top = -ink.bottom();
+                                            let bottom = -ink.top();
+                                            ink_top = Some(ink_top.map_or(top, |value| value.min(top)));
+                                            ink_bottom = Some(ink_bottom.map_or(bottom, |value| value.max(bottom)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let ink_top = ink_top.unwrap_or(-wrapped_line.ascent * 0.85);
+                        let ink_bottom = ink_bottom.unwrap_or(wrapped_line.descent * 0.85);
+                        let height = ink_bottom - ink_top + px(8.);
+                        let top = baseline + ink_top - px(4.);
+                        let bounds = Bounds::new(wrapped_origin + point(left, top), size(right - left, height));
+                        window.paint_quad(fill(bounds, background).corner_radii(px(4.)));
+                    }
+                }
+                code_offset = end;
+            }
+            code_offset += 1;
+            background_offset_y += line.size(line_height).height;
+            if Some(visible_range.start + ix) == prepaint.current_row {
+                background_offset_y += line_height * prepaint.ghost_lines.len() as f32;
+            }
         }
 
         // Paint selections

@@ -38,6 +38,42 @@ pub struct ShapedLine {
 }
 
 impl ShapedLine {
+    /// Scale selected UTF-8 ranges and reserve inline horizontal padding.
+    /// The resulting glyph positions are shared by painting and caret hit testing.
+    pub fn with_scaled_ranges(mut self, ranges: &[std::ops::Range<usize>], scale: f32, padding: Pixels) -> Self {
+        if ranges.is_empty() { return self; }
+        let old = self.layout.as_ref();
+        let mut runs: Vec<crate::ShapedRun> = Vec::new();
+        let mut delta = px(0.);
+        let mut segment_start = px(0.);
+        let mut scaled = false;
+        for run in &old.runs {
+            let mut next_run: Option<crate::ShapedRun> = None;
+            for glyph in &run.glyphs {
+                let index = ranges.partition_point(|range| range.end <= glyph.index);
+                let next_scaled = ranges.get(index).is_some_and(|range| range.contains(&glyph.index));
+                if next_scaled != scaled {
+                    if scaled { delta += (glyph.position.x - segment_start) * (scale - 1.) + padding * 2.; }
+                    segment_start = glyph.position.x;
+                    scaled = next_scaled;
+                }
+                let font_size = scaled.then_some(old.font_size * scale).or(run.font_size);
+                if next_run.as_ref().is_some_and(|r| r.font_size != font_size) {
+                    runs.push(next_run.take().unwrap());
+                }
+                let target = next_run.get_or_insert_with(|| crate::ShapedRun { font_id: run.font_id, font_size, glyphs: Vec::new() });
+                let mut glyph = glyph.clone();
+                glyph.position.x += delta;
+                if scaled { glyph.position.x += padding + (glyph.position.x - delta - segment_start) * (scale - 1.); }
+                target.glyphs.push(glyph);
+            }
+            if let Some(run) = next_run { runs.push(run); }
+        }
+        if scaled { delta += (old.width - segment_start) * (scale - 1.) + padding * 2.; }
+        self.layout = Arc::new(LineLayout { font_size: old.font_size, width: old.width + delta,
+            ascent: old.ascent, descent: old.descent, runs, len: old.len });
+        self
+    }
     /// The length of the line in utf-8 bytes.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
@@ -228,7 +264,7 @@ fn paint_line(
         let mut max_glyph_size = size(px(0.), px(0.));
         let mut first_glyph_x = origin.x;
         for (run_ix, run) in layout.runs.iter().enumerate() {
-            max_glyph_size = text_system.bounding_box(run.font_id, layout.font_size).size;
+            max_glyph_size = text_system.bounding_box(run.font_id, run.font_size.unwrap_or(layout.font_size)).size;
 
             for (glyph_ix, glyph) in run.glyphs.iter().enumerate() {
                 glyph_origin.x += glyph.position.x - prev_glyph_position.x;
@@ -374,14 +410,14 @@ fn paint_line(
                             glyph_origin + baseline_offset,
                             run.font_id,
                             glyph.id,
-                            layout.font_size,
+                            run.font_size.unwrap_or(layout.font_size),
                         )?;
                     } else {
                         window.paint_glyph(
                             glyph_origin + baseline_offset,
                             run.font_id,
                             glyph.id,
-                            layout.font_size,
+                            run.font_size.unwrap_or(layout.font_size),
                             color,
                         )?;
                     }

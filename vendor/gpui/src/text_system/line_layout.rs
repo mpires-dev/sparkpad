@@ -33,6 +33,8 @@ pub struct LineLayout {
 pub struct ShapedRun {
     /// The font id for this run
     pub font_id: FontId,
+    /// Optional size override for inline text shaped at a smaller scale.
+    pub font_size: Option<Pixels>,
     /// The glyphs that make up this run
     pub glyphs: Vec<ShapedGlyph>,
 }

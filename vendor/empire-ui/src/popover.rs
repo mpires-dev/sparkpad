@@ -734,6 +734,8 @@ enum PopoverTrigger {
 pub struct Popover {
     /// A animação, e com ela o estado "aberto".
     anim: Anim,
+    smooth: bool,
+    fade: crate::motion::Tween,
     /// O gatilho.
     trigger: PopoverTrigger,
     /// O conteúdo do popup. `None` = popup vazio (só a superfície e o respiro).
@@ -772,6 +774,7 @@ impl Popover {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             anim: Anim::default(),
+            smooth:false,fade:crate::motion::Tween::new(0.),
             trigger: PopoverTrigger::Button(SharedString::from("Popover")),
             content: None,
             side: MenuSide::default(),
@@ -790,7 +793,13 @@ impl Popover {
         }
     }
 
-    /// Gatilho = um [`Button`] `Outline` com este rótulo.
+    /// Close immediately when another popup takes its place.
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
+        self.set_open(false,cx);self.fade=crate::motion::Tween::new(0.);cx.notify();
+    }
+    /// Enable interruptible entrance and exit fades. Off by default.
+    pub fn motion(mut self, enabled: bool) -> Self {self.smooth=enabled;self}
+
     pub fn trigger_button(mut self, label: impl Into<SharedString>) -> Self {
         self.trigger = PopoverTrigger::Button(label.into());
         self
@@ -893,6 +902,7 @@ impl Popover {
         if !self.anim.set(open) {
             return;
         }
+        self.fade.set(if open {1.} else {0.},160);
         cx.emit(PopoverEvent::OpenChange(open));
         cx.notify();
     }
@@ -1013,7 +1023,8 @@ impl Popover {
 
         let content = self.content.as_ref().map(|render| render(window, cx));
 
-        let surface = popup_surface(self.width, max_w, self.anim.opacity())
+        let surface = popup_surface(self.width, max_w, if self.smooth {self.fade.value()} else {self.anim.opacity()})
+            .when(!self.anim.open(), |d| d.capture_any_mouse_down(cx.listener(|this,event:&MouseDownEvent,_,cx| {if this.popup_bounds.is_some_and(|b|b.contains(&event.position)) {cx.stop_propagation();}})))
             .child(
                 // O `Viewport` da fonte: `px-(--viewport-inline-padding) py-4`,
                 // `max-h-(--available-height)` e `overflow-y-auto`. Quem rola é ESTE div, e não a
@@ -1130,7 +1141,7 @@ impl Render for Popover {
         // `request_animation_frame` (e não o `on_next_frame` do `crate::dialog`) porque ele notifica a
         // view CORRENTE, que aqui é este próprio `Popover`: é o popover que monta o popup, não uma
         // view hospedeira. Ele é um no-op na plataforma de TESTE — ver a nota dos testes de janela.
-        if self.anim.animating() {
+        if self.anim.animating() || (self.smooth && self.fade.moving()) {
             window.request_animation_frame();
         }
 
@@ -1157,7 +1168,7 @@ impl Render for Popover {
 
         // Fechado não monta NADA: nem pintura, nem hitbox (o popup é `occlude()`). A fonte não tem
         // animação de saída, então isto acontece no MESMO frame do fechamento — ver [`Anim::mounted`].
-        if self.anim.mounted() {
+        if self.anim.mounted() || (self.smooth && self.fade.moving()) {
             root = root.child(self.render_popup(window, cx));
         }
 
