@@ -97,3 +97,17 @@ showNote('welcome');
 $$('.language-switcher a').forEach(link => link.addEventListener('click', () => { if (location.hash) link.href = link.pathname + location.hash; }));
 document.addEventListener('pointerdown', event => { $$('.language-switcher[open]').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; }); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { $$('.language-switcher[open]').forEach(menu => { menu.open = false; $('summary', menu).focus(); }); } });
+
+// Keep one accessible header; its slot preserves document geometry when it floats.
+const siteHeader = $('.site-header');
+let headerScrollFrame = null;
+function updateFloatingHeader() {
+  headerScrollFrame = null;
+  siteHeader.classList.toggle('is-floating', window.scrollY > 180);
+}
+window.addEventListener('scroll', () => {
+  if (headerScrollFrame === null) headerScrollFrame = requestAnimationFrame(updateFloatingHeader);
+}, {passive: true});
+window.addEventListener('pageshow', updateFloatingHeader);
+updateFloatingHeader();
+

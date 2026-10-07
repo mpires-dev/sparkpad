@@ -25,12 +25,15 @@ const t = translator(locale);
 </head>
 <body>
 <a class="skip-link" href="#main">{t("Pular para o conteúdo")}</a>
+<div class="header-slot">
 <header class="site-header">
   <a class="brand" href={localePath(locale)} aria-label={t("Sparkpad, início")}><img src="/assets/sparkpad.png" alt="" width="34" height="34"><span>Sparkpad</span></a>
   <nav class="desktop-nav" aria-label={t("Navegação principal")}><a href="#produto">{t("Produto")}</a><a href="#detalhes">{t("Recursos")}</a><a href="#agentes">{t("Para agentes")} <span class="nav-badge">MCP</span></a><a href="#perguntas">{t("Perguntas")}</a></nav>
   <div class="nav-actions"><LanguageSwitcher locale={locale} /><a class="github-link" href="https://github.com/mpires-dev/sparkpad" target="_blank" rel="noopener noreferrer"><SolarIcon variant="bold" name="code-circle" />GitHub <span><SolarIcon variant="bold" name="arrow-right-up" /></span></a><a class="button button-dark button-small" href="/downloads/Sparkpad-macOS.zip" download>{t("Baixar para Mac")} <span><SolarIcon variant="bold" name="arrow-right-up" /></span></a><button class="mobile-menu icon-button" aria-label={t("Abrir navegação")} aria-expanded="false" aria-controls="mobile-nav"><SolarIcon variant="bold" name="hamburger-menu" /></button></div>
-</header>
 <nav id="mobile-nav" class="mobile-nav" aria-label={t("Navegação móvel")} hidden><a href="#produto">{t("Produto")}</a><a href="#detalhes">{t("Recursos")}</a><a href="#agentes">{t("Para agentes")}</a><a href="#perguntas">{t("Perguntas")}</a></nav>
+</header>
+</div>
+
 <main id="main">
 <section class="hero" aria-labelledby="hero-title">
   <div class="sky" aria-hidden="true"><img class="cloud cloud-one" src="/assets/cloud-cumulus.webp" alt=""><img class="cloud cloud-two" src="/assets/cloud-bank.webp" alt=""><img class="cloud cloud-three" src="/assets/cloud-cumulus.webp" alt=""><img class="cloud cloud-four" src="/assets/cloud-bank.webp" alt=""></div>
