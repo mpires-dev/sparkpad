@@ -1,0 +1,32 @@
+---
+import {translator, type Locale, type TranslationKey} from '../i18n';
+interface Props {locale: Locale;}
+const {locale} = Astro.props;
+const t = translator(locale);
+---
+  <div class="demo-stage" id="produto">
+    <div class="desktop-menubar" aria-hidden="true"><span>● &nbsp; <b>Sparkpad</b>   {t("Arquivo   Editar   Visualizar")}</span><span>{t("◒   ▰   Ter, 6 out   09:41")}</span></div>
+    <div class="desktop-wallpaper">
+      <div class="desktop-file" aria-hidden="true"><img src="/assets/sparkpad.png" alt=""><span>Sparkpad</span></div>
+      <div id="app-preview" class="app-window dark" role="tabpanel" aria-labelledby="tab-write">
+        <aside class="app-sidebar" aria-label={t("Notas da demonstração")}>
+          <div class="window-controls"><span></span><span></span><span></span><button class="icon-button sidebar-toggle" aria-label={t("Recolher sidebar da demonstração")}><img class="icon" src="/assets/icons/sidebar-collapse.svg" alt=""></button></div>
+          <div class="app-brand"><b>SparkPad</b><button class="icon-button new-demo-note" aria-label={t("Criar uma nota na demonstração")}><img class="icon" src="/assets/icons/plus.svg" alt=""></button></div>
+          <button class="group-heading" aria-expanded="true" aria-controls="demo-notes">{t("Seu espaço")} <img class="icon" src="/assets/icons/nav-arrow-down.svg" alt=""></button>
+          <div id="demo-notes" class="demo-notes"><button class="note-item selected" data-note="welcome" aria-current="page"><span class="note-emoji">✳️</span>{t("Um lugar para pensar")}</button><button class="note-item" data-note="ideas"><span class="note-emoji">💡</span>{t("Ideias em movimento")}</button><button class="note-item child-note" data-note="launch"><span class="note-emoji">🚀</span>{t("O próximo lançamento")}</button><button class="note-item" data-note="code"><img class="icon" src="/assets/icons/code-brackets.svg" alt="">{t("Notas de desenvolvimento")}</button></div>
+          <button class="group-heading second-group" aria-expanded="true" aria-controls="demo-projects">{t("Projetos")} <img class="icon" src="/assets/icons/nav-arrow-down.svg" alt=""></button>
+          <div id="demo-projects"><button class="note-item" data-note="launch"><span class="note-emoji">📁</span>{t("Feito para criar")} <span class="item-count">3</span></button></div>
+          <div class="app-sidebar-footer"><span class="status-dot"></span><span id="mcp-status">{t("MCP disponível")}</span></div>
+        </aside>
+        <div class="app-main"><button class="restore-sidebar icon-button" aria-label={t("Mostrar sidebar da demonstração")} hidden><img class="icon" src="/assets/icons/sidebar-expand.svg" alt=""></button><div class="demo-cover"><div class="cover-grain"></div><span>{t("Um pouco de espaço. Muitas possibilidades.")}</span></div><div class="demo-scroll"><div class="demo-document" id="demo-document">
+  <span class="page-emoji" aria-hidden="true">✳️</span>
+  <h2 contenteditable="true" aria-label={t('Título da nota de demonstração')}>{t('Um lugar para pensar')}</h2>
+  <div class="editable-body"><p contenteditable="true">{t('Algumas ideias precisam de espaço. Outras, só de um lugar para começar.')} <strong>{t('Este é o seu.')}</strong></p><h3 contenteditable="true">{t('Um pouco de clareza para o dia')}</h3>
+  {['Separar o que importa','Dar forma à próxima ideia','Criar algo que faça sentido'].map((label,index) => <div class="editor-line"><input type="checkbox" checked={index === 0} aria-label={t(label as TranslationKey)} />{t(label as TranslationKey)}</div>)}
+  <p contenteditable="true">{t('Uma nota pode virar um plano. Um plano pode virar um projeto.')}<br />{t('E o próximo passo pode começar com')} <code>{t('uma linha')}</code>.</p></div>
+  <p class="new-block" contenteditable="true" aria-label={t('Adicionar texto à demonstração')} data-placeholder={t('Escreva ou digite /…')}></p>
+</div></div><div class="app-footer"><span class="demo-label">{t("Prévia interativa")}</span><div class="footer-controls"><button class="icon-button demo-width" aria-label={t("Alternar largura do conteúdo")} title={t("Largura do conteúdo")}><img class="icon" src="/assets/icons/view-columns-3.svg" alt=""></button><button class="icon-button demo-font" aria-label={t("Alternar fonte do conteúdo")} title={t("Trocar fonte")}>Aa</button><button class="icon-button demo-theme" aria-label={t("Usar tema claro na demonstração")} title={t("Alternar tema")}><img class="icon" src="/assets/icons/half-moon.svg" alt=""></button><button class="icon-button demo-pin" aria-label={t("Fixar demonstração")} aria-pressed="false" title={t("Fixar painel")}><img class="icon" src="/assets/icons/pin.svg" alt=""></button></div></div></div>
+      </div>
+    </div>
+  </div>
+  <p class="demo-caption"><span class="status-dot"></span> {t("Experimente: escolha uma nota, edite um texto ou troque o tema.")} <span class="caption-hint">{t("É leve até na prévia.")}</span></p>

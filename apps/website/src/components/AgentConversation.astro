@@ -1,0 +1,34 @@
+---
+import SolarIcon from './SolarIcon.astro';
+import BlocksLoader from './BlocksLoader.astro';
+import {translator, type Locale} from '../i18n';
+interface Props {locale: Locale;}
+const {locale} = Astro.props;
+const t = translator(locale);
+const prompt = t('Organize minhas ideias para o próximo lançamento. Crie uma página para cada etapa.');
+const response = t('Um espaço para transformar ideias em ação.');
+const tools = [
+  {name: 'create_note', result: t('Planejamento do lançamento')},
+  {name: 'create_note', result: t('Pesquisa · Desenvolvimento · Checklist')},
+  {name: 'move_note', result: t('3 páginas organizadas')},
+];
+---
+<div class="agent-conversation" data-agent-conversation>
+  <div class="conversation-title"><SolarIcon name="stars" class="agent-mark" /> {t('Você + seu agente')} <span class="connection-pill"><span class="status-dot"></span>MCP</span></div>
+  <div class="conversation-playback"><button class="conversation-pause" type="button" aria-label={t('Pausar animação')} aria-pressed="false"><span class="pause-symbol"><SolarIcon name="pause" /></span><span class="play-symbol"><SolarIcon name="play" /></span><span data-playback-label>{t('Pausar')}</span></button><span class="conversation-stage" aria-hidden="true"><BlocksLoader /><span data-stage-label>{t('Demonstração em loop')}</span></span></div>
+  <div class="conversation-timeline">
+    <div class="chat-user" data-prompt>
+      <span class="streaming-copy"><span class="stream-reserve" aria-hidden="true">{prompt}</span><span class="stream-output" data-stream="prompt">{prompt}</span></span>
+    </div>
+    <div class="chat-agent"><SolarIcon name="stars" class="agent-mark small" /><div>
+      <p class="agent-response"><span class="streaming-copy"><span class="stream-reserve" aria-hidden="true">{response}</span><span class="stream-output" data-stream="response">{response}</span></span></p>
+      {tools.map((tool, index) => <div class="agent-tool" data-tool={index}>
+        <span class="tool-indicator" aria-hidden="true"><BlocksLoader class="tool-spinner" /><span class="tool-check"><SolarIcon name="check-circle" /></span></span>
+        <span class="tool-name">{tool.name}</span>
+        <span class="tool-result" data-result={tool.result}>{tool.result}</span>
+      </div>)}
+    </div></div>
+  </div>
+  <div class="conversation-bottom">{t('Exemplo de fluxo com MCP')} <span>Claude Code · Codex · Kimi</span></div>
+</div>
+<script src="../scripts/agent-conversation.js"></script>
