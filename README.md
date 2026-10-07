@@ -1,81 +1,124 @@
-# Sparkpad
+<p align="center">
+  <a href="https://sparkpad.mplabs.sh">
+    <img src="assets/app/icon.png" alt="Sparkpad logo" width="112" height="112" />
+  </a>
+</p>
 
-**Sparkpad** é um bloco de notas nativo para macOS, inspirado na edição por blocos do Notion, com uma proposta mínima e leve. Escreva, organize páginas e subpáginas e conecte agentes pelo MCP. Seus dados ficam em SQLite local; a interface usa **Rust + GPUI** e a **empire-ui do Fennel Motion**, sem WebView.
+<h1 align="center">Sparkpad</h1>
 
-O app aparece no Dock e na barra de menus. Fixar acima de outras janelas e ajustar a transparência são opções para quando você precisar de uma nota por perto.
+<p align="center">
+  <strong>A little room for your ideas to take shape.</strong><br />
+  Native notes for Mac. The freedom of a block editor. Your AI agents, in the same space.
+</p>
 
-## Rodar
+<p align="center">
+  <a href="https://sparkpad.mplabs.sh"><img src="https://img.shields.io/badge/macOS-12%2B-9186b2?style=flat-square&logo=apple&logoColor=white" alt="macOS 12 or later" /></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/built_with-Rust-222222?style=flat-square&logo=rust&logoColor=white" alt="Built with Rust" /></a>
+  <a href="#your-agents-in-the-same-space"><img src="https://img.shields.io/badge/MCP-25_tools-9186b2?style=flat-square" alt="MCP: 25 tools" /></a>
+  <a href="#your-notes-truly-yours"><img src="https://img.shields.io/badge/storage-local_SQLite-222222?style=flat-square&logo=sqlite&logoColor=white" alt="Local SQLite storage" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-9186b2?style=flat-square" alt="License: AGPL-3.0-or-later" /></a>
+</p>
 
-Requisitos: macOS 12 ou superior, Rust com Cargo e as ferramentas de linha de comando do Xcode (`xcode-select --install`). O repositório inclui as dependências locais da interface; não é necessário baixar o projeto Fennel Motion.
+<p align="center">
+  <a href="https://sparkpad.mplabs.sh"><strong>Website</strong></a> ·
+  <a href="https://sparkpad.mplabs.sh/downloads/Sparkpad-macOS.zip"><strong>Download for Mac</strong></a> ·
+  <a href="#getting-started"><strong>Getting started</strong></a> ·
+  <a href="#your-agents-in-the-same-space"><strong>MCP setup</strong></a> ·
+  <a href="https://github.com/mpires-dev/sparkpad/issues"><strong>Report an issue</strong></a>
+</p>
+
+<br />
+
+<p align="center">
+  <img src="docs/images/sparkpad-dark.png" alt="Sparkpad running on macOS in dark mode, showing nested pages, a purple cover, a checklist, inline code, and a note titled A place to think" width="1200" />
+</p>
+
+<p align="center"><sub>A real app screenshot with example notes. Built with Rust and GPUI.</sub></p>
+
+---
+
+## Think. Write. Connect.
+
+Sparkpad is an open-source, native macOS notes app inspired by the simplicity of Markdown and the flexibility of block editing. Capture an idea, turn it into a page, and organize it into a project. Connect an MCP client when you want an agent to help.
+
+No account. No subscription. Notes are stored on your Mac, and the interface renders through Rust + GPUI, without a WebView.
+
+| Write in your own way | Give ideas a home | Bring your agents along |
+| :--- | :--- | :--- |
+| Edit headings, lists, tasks, quotes, and code directly in your notes. | Nest pages, organize sidebar groups, and drag entire branches into place. | Let Claude Code, Codex, or another MCP client create, edit, and organize notes. |
+| Use a keyboard-friendly `/` menu and rich text shortcuts. | Add emoji, SVG, or image icons, plus colorful covers and gradients. | Read and edit individual blocks, customize pages, and update app preferences. |
+| Highlight code, select its language, indent with Tab, and copy it in one click. | Choose light or dark mode, three fonts, and your preferred content width. | Keep edits safe with revision checks and shared local storage. |
+
+## Getting started
+
+### Download for macOS
+
+[**Download Sparkpad for Mac →**](https://sparkpad.mplabs.sh/downloads/Sparkpad-macOS.zip)
+
+The current download is an Apple Silicon build. Extract the archive and move `Sparkpad.app` to Applications. The app is ad hoc signed and is not currently notarized; macOS may require approval in **System Settings → Privacy & Security** before opening it.
+
+### Build from source
+
+You need macOS 12 or later, Rust with Cargo, and the Xcode Command Line Tools. The UI dependencies are included in the repository.
 
 ```sh
+git clone https://github.com/mpires-dev/sparkpad.git
+cd sparkpad
+xcode-select --install  # if the Command Line Tools are not installed
 cargo run --locked
 ```
 
-Dependências incluídas no repositório e já configuradas em `Cargo.toml`:
-
-- `vendor/empire-ui` — biblioteca de componentes do Fennel Motion, incluída com dependências explícitas para funcionar fora do workspace original.
-- `vendor/gpui` — GPUI 0.2.2 com correção local na junção de trechos de fonte; preserva negrito/itálico nos inputs. Ver `vendor/gpui/PATCHES.md`.
-- `vendor/gpui-component` — cópia do fork usado pelo Fennel para edição e seleção de texto, com correções locais de layout do Markdown em `ScrollArea`. A origem e os patches estão em `vendor/gpui-component/PATCHES.md`.
-
-Para gerar o aplicativo:
+To create an application bundle:
 
 ```sh
 ./scripts/bundle.sh
 open "dist/Sparkpad.app"
 ```
 
-Use `./scripts/bundle.sh release` para uma build de distribuição otimizada. A assinatura local é ad hoc; o pacote não é notarizado para distribuição em outros Macs.
+Use `./scripts/bundle.sh release` for an optimized distribution build.
 
-## Escrever e organizar
+## Make room to write
 
-- Clique no ícone do Sparkpad na barra de menus para mostrar ou esconder.
-- Arraste pela borda superior ou pelo texto **SparkPad** na sidebar para posicionar o painel; redimensione pelas bordas.
-- Clique em um bloco para editar no lugar, mantendo títulos, negrito, itálico e o restante do documento renderizados. **⌘ Enter** esconde as ferramentas de edição.
-- O menu **⋯** e o clique direito na nota oferecem as mesmas ações, incluindo **Excluir nota**, com confirmação que informa as subpáginas incluídas.
-- Ao arrastar uma nota, as linhas mostram inserção acima/abaixo; o centro indica inserção como filha. Mova para a esquerda para sair de nível. Destinos fechados abrem após 500 ms, e a árvore rola automaticamente nas bordas.
-- Arraste a borda direita da sidebar para ajustar a largura (180–420 px); ela é salva ao soltar.
-- Sidebar e árvore expandem/recolhem com transições curtas e interrompíveis; popovers, toolbar e controles de hover aparecem suavemente. As animações pedem frames apenas enquanto estão em andamento.
-- Abra ou recolha a sidebar pelo botão no canto superior esquerdo; **+** cria uma nota. O campo de título permite renomear.
-- Ajuste a transparência pelo slider **Opacidade**. **A− / A+** ajustam o texto na leitura e na edição.
-- **⌘ N** cria uma nota; **⌘ B** alterna a sidebar fora do texto, ou **⇧⌘ B** em qualquer lugar; **Esc** esconde o painel.
-- No texto, **⌘ B / ⌘ I / ⌘ U / ⌘ E** formatam a seleção como negrito, itálico, sublinhado ou código. **⌘ Z / ⇧⌘ Z** desfazem/refazem alterações, inclusive operações entre blocos.
-- Copiar e colar preserva títulos, listas, tarefas, citações, links, código e estilos inline por HTML no clipboard do macOS, para intercâmbio com editores como o Notion. Cópias entre páginas do Sparkpad também incluem Markdown para preservar o conteúdo. **⌘/Ctrl ⇧ V** cola apenas o texto, usando a formatação do destino.
-- O botão de saída no rodapé encerra o app depois de salvar.
+- **Blocks that stay out of your way.** Edit in place, split and merge paragraphs, reorder blocks, and select text across the whole page. Empty blocks between paragraphs remain empty; only the last empty block shows a placeholder.
+- **Code that feels like code.** Tree-sitter highlighting, language selection including JSX and TSX, two-space indentation, and a dedicated copy button. Inside a code block, Select All selects the code and formatting shortcuts stay out of the way.
+- **A sidebar that grows with you.** Pages within pages, manual groups, drag-and-drop ordering, keyboard navigation, and persisted expanded branches.
+- **A page that feels like yours.** Emoji and Iconoir icons, uploaded images, solid and gradient covers, light and dark themes, and sans, serif, or monospace text.
+- **A native companion.** Dock and menu bar access, adjustable opacity, an optional always-on-top window, and saved window position and sidebar width.
+- **Rich clipboard support.** Copy and paste headings, lists, tasks, links, code, and inline formatting through HTML and Markdown, including exchanges with editors such as Notion.
 
-O conteúdo é salvo automaticamente após 350 ms sem digitar, e também ao trocar de nota, entrar em leitura, ocultar ou sair. Notas, seleção, opacidade, fonte, largura do conteúdo e posição da janela são persistidas. O seletor de fonte no footer oferece NV Legible Next (sans serif), Libron (serifada) e JetBrains Mono. A escolha é persistida e afeta apenas o título e o conteúdo da nota. As três famílias são embutidas com versões regular, negrito, itálico e negrito itálico. O botão de sol/lua no footer alterna entre os temas neutros claro e escuro, com preferência persistida. Os botões de ícone no footer abrem os sliders de opacidade e largura em popovers. O slider “Largura” ajusta a coluna de 40% a 100%, centralizando texto, título e ícone; a capa mantém a largura inteira. Markdown suporta títulos, negrito, itálico, listas, citações, tabelas e blocos de código pelo renderizador do `gpui-component`.
+### Keyboard shortcuts
 
-### Editor de blocos
+| Shortcut | Action |
+| :--- | :--- |
+| `/` at the start of a paragraph | Open the block menu; use ↑ / ↓, Enter, and Esc |
+| ⌘ N | Create a note |
+| ⇧ ⌘ B | Toggle the sidebar |
+| ⌘ B / ⌘ I / ⌘ U / ⌘ E | Bold, italic, underline, or inline code |
+| ⌘ A | Select the page content, or just the focused code block |
+| ⌘ Z / ⇧ ⌘ Z | Undo / redo |
+| ⌘ Enter | Hide editing tools |
+| Enter / ⇧ Enter | Split a block / insert a line break |
+| Tab / ⇧ Tab in code | Indent / outdent |
+| ⇧ ⌘ V | Paste plain text |
+| Esc | Dismiss an open menu, or hide the panel |
 
-O fim da nota oferece meia tela de espaço vazio rolável; clicar ali permite continuar escrevendo. O espaço acompanha a altura da janela.
+## Your agents, in the same space
 
-**Enter** divide o bloco no cursor; **Shift Enter** insere uma quebra de linha. **Backspace** no início de um parágrafo junta com o bloco anterior; no início de título/lista/citação, converte em parágrafo; **Delete** no fim junta com o seguinte. Um Enter em um item vazio encerra a lista. As setas navegam entre blocos quando o cursor chega ao início/fim. Blocos de código mantêm Enter como nova linha.
+Sparkpad includes an **MCP server over stdio** in the same executable. A client launches a separate process that shares the app's local SQLite database. Agents can work with notes even when the UI is closed; `show_panel` requires the app to be running.
 
-Digite **/** no início de um parágrafo para abrir o dropdown de blocos. **↑ / ↓** navegam, **Enter** escolhe e **Esc** fecha sem apagar o texto. O menu tem ícones, atalhos, Scroll Area e mantém o foco no editor para filtrar pelo nome: texto, títulos 1–3, lista, lista numerada, checklist, citação, código ou divisor. O dropdown na toolbar mostra o tipo atual e permite converter um bloco existente. Os prefixos `# `, `## `, `### `, `- `, `1. `, `> ` e `[] ` convertem um parágrafo vazio ao digitar. Os controles de **adicionar** e **arrastar** aparecem apenas ao passar o mouse sobre o bloco, sobrepostos à esquerda e alinhados ao topo. **+** insere um novo bloco abaixo daquele bloco. Clique no ícone de **arrastar** para selecionar o bloco inteiro e abrir a toolbar de tipo, exclusão e desfazer/refazer; arraste por esse ícone para reordenar, com uma linha indicando o destino tanto acima quanto abaixo e nos espaços entre blocos. Clique no espaço vazio abaixo do último bloco para continuar escrevendo: um novo parágrafo é criado e recebe o cursor, ou o parágrafo final vazio é reutilizado. A seleção de texto é contínua e pode atravessar blocos ao clicar e arrastar, nos dois sentidos. **⌘A** ou **Ctrl+A** seleciona todo o conteúdo da nota. Copiar reúne os trechos selecionados; recortar, colar, digitar e apagar substituem o intervalo inteiro, preservando o texto e a formatação fora dele. As ferramentas de formatação aplicam o estilo a todos os trechos selecionados. Um novo clique inicia outra seleção; as setas recolhem a seleção para o início ou para o fim. Ao arrastar junto à borda da área de leitura, o documento rola para continuar a seleção.
-
-A edição e a leitura usam o mesmo campo nativo por bloco: clicar só posiciona o cursor, sem trocar componentes, tamanho da fonte ou margens. O controle de arraste usa o SVG Grip Vertical de seis pontos fornecido pelo usuário. Os demais ícones da toolbar, do dropdown e dos controles são os SVGs oficiais do [Iconoir](https://iconoir.com/) já embutidos na empire-ui. A toolbar só aparece com texto selecionado (negrito, itálico, sublinhado, riscado e código) ou com o bloco selecionado pelo ícone de arraste (conversão de tipo). Com texto selecionado, fica centralizada acima do trecho na primeira linha visual selecionada, respeitando a largura do documento; com o bloco inteiro selecionado, fica acima do bloco. É ocultada durante o arraste; o menu `/` aparece abaixo dele, sem ocupar espaço no documento. Apenas posicionar o cursor não abre a toolbar. Sublinhado é persistido como HTML inline `<u>…</u>`, mantendo o documento em Markdown. Texto e títulos quebram linhas conforme a largura do painel. O título da nota tem o mesmo recuo lateral do texto dos parágrafos.
-
-O modelo usa IDs estáveis, conteúdo de texto com intervalos de estilos e operações de divisão/junção. A edição usa o `InputState` nativo do fork do Fennel com estilos inline; não há WebView. O documento continua salvo como Markdown e mantém intactos os trechos que não foram modificados. Tabelas, imagens, listas aninhadas e outras construções avançadas são renderizadas normalmente e têm edição da fonte limitada ao respectivo bloco.
-
-A lógica foi inspirada na consulta ao [gerenciador de blocos do Editor.js](https://github.com/codex-team/editor.js/blob/next/src/components/modules/blockManager.ts) (identidade, inserção, divisão e junção) e ao [menu de comandos do BlockNote](https://github.com/TypeCellOS/BlockNote/blob/main/packages/core/src/extensions/SuggestionMenu/getDefaultSlashMenuItems.ts) (conversão do bloco atual e seleção após inserir). A implementação Rust é própria.
-
-Se um agente alterar a mesma nota durante uma edição local, a revisão impede a sobrescrita. O painel mantém seu texto e oferece **Preservar como nova nota**. Alterações externas aparecem no painel automaticamente quando não existe uma edição local pendente.
-
-## MCP
-
-O mesmo executável oferece um servidor **MCP via stdio**. O cliente inicia um processo separado, sem abrir a interface, que compartilha o SQLite com o painel. O app pode estar fechado para criar e editar notas; `show_panel` exige o app aberto.
-
-Compile e registre o caminho absoluto do executável. Execute na raiz do checkout:
+Build the executable, then register it from the repository root:
 
 ```sh
 cargo build --locked
+
+# Codex
 codex mcp add sparkpad -- "$PWD/target/debug/sparkpad" mcp
+
+# Claude Code
 claude mcp add --scope user sparkpad -- "$PWD/target/debug/sparkpad" mcp
 ```
 
-A conexão stdio do Codex é documentada em [MCP no Codex](https://developers.openai.com/codex/mcp). As sintaxes acima também foram verificadas nos comandos locais `codex mcp add --help` e `claude mcp add --help`.
-
-Para outros clientes MCP, use:
+For other MCP clients:
 
 ```json
 {
@@ -88,115 +131,90 @@ Para outros clientes MCP, use:
 }
 ```
 
-Também pode apontar para `dist/Sparkpad.app/Contents/MacOS/sparkpad`, que não depende da pasta `target` depois de empacotado.
+For a bundled installation, use the absolute path to `Sparkpad.app/Contents/MacOS/sparkpad` instead. Reconnect your client after updating the executable to refresh its tools.
 
-| Ferramenta | Uso |
-| --- | --- |
-| `list_notes` | Lista notas com IDs, `parent_id`, texto e revisões |
-| `list_sidebar_groups` | Lista os grupos da raiz e suas páginas |
-| `create_sidebar_group` | Cria um agrupador com `title`, sem conteúdo ou subgrupos |
-| `rename_sidebar_group` | Renomeia o agrupador por `id` e `title` |
-| `delete_sidebar_group` | Exclui só o grupo; páginas e subpáginas são preservadas na raiz |
-| `move_note_to_group` | Move a página e sua subárvore para `group_id`, ou remove do grupo com `null`; usa `expected_revision` |
-| `get_note` | Lê título, Markdown e revisão |
-| `create_note` | Cria nota com `title`, `markdown` e `parent_id` ou `group_id` opcional |
-| `update_note` | Atualiza nota inteira com `expected_revision` |
-| `patch_note` | Substitui um trecho único com `old_text`, `new_text` e `expected_revision` |
-| `move_note` | Move uma nota e suas descendentes para `parent_id`; `null` devolve à raiz, com `expected_revision` |
-| `delete_note` | Exclui com verificação de revisão; rejeita notas que ainda têm filhas |
-| `select_note` | Seleciona a nota mostrada no painel |
-| `show_panel` | Solicita a exibição do painel |
-| `get_sidebar_tree` | Hierarquia completa e ordenada: raízes, grupos, páginas, IDs de filhas, ícones, capas e seleção |
-| `reorder_sidebar` | Reordena todos os irmãos de uma raiz, página ou grupo; também reordena agrupadores |
-| `get_note_presentation` | Lê ícone, capa e associação ao agrupador |
-| `search_page_icons` | Pesquisa paginada no catálogo completo de emojis e Iconoir, com nomes em português/inglês |
-| `set_note_icon` | Define emoji, ícone Iconoir ou imagem local; `value: null` remove |
-| `list_cover_presets` | Lista IDs das cores e gradientes disponíveis |
-| `set_note_cover` | Define capa de cor/gradiente ou imagem local; `value: null` remove |
-| `get_note_blocks` | Lê blocos nativos com índice, tipo, texto, Markdown e revisão |
-| `edit_note_block` | Insere, atualiza, remove ou move um bloco com `expected_revision` |
-| `get_preferences` | Lê fonte, tema, opacidade, largura do conteúdo, tamanho do texto, sidebar e fixação |
-| `update_preferences` | Atualiza as preferências fornecidas atomicamente e sincroniza com o app aberto |
+> Create a launch planning page with subpages for research, decisions, and next steps. Add a checklist, organize the pages in a project group, and show the main page in Sparkpad.
 
-O servidor se identifica como `sparkpad`, título **Sparkpad**, versão **0.2.0**, com **25 ferramentas**. Para instalações globais no Codex ou Kimi, configure o caminho absoluto de `dist/Sparkpad.app/Contents/MacOS/sparkpad`, com o argumento `mcp`. Depois de atualizar o executável, reconecte o MCP no cliente para recarregar a lista de ferramentas.
+<details>
+<summary><strong>Explore all 25 MCP tools</strong></summary>
 
-A árvore retorna páginas em formato plano (`pages`), com `parent_id`, `group_id` e `child_ids` ordenados. `root_ids` ordena as páginas sem agrupador e cada grupo contém `page_ids`. Isso preserva árvores profundas sem serialização recursiva. Para mudar de ramo, use `move_note`; para colocar numa seção, use `move_note_to_group`. Para mudar a posição, `reorder_sidebar` exige todos os IDs atuais daquele conjunto de irmãos, uma vez cada. IDs ausentes, duplicados ou de outra seção causam erro sem escrita parcial. A ordem persiste e não muda ao editar o título ou Markdown.
+| Tools | What they do |
+| :--- | :--- |
+| `list_notes`, `get_note` | Read notes, Markdown, IDs, and revisions |
+| `create_note`, `update_note`, `patch_note` | Create pages, replace content, or patch a unique text passage |
+| `move_note`, `delete_note` | Move a page and its descendants, or delete with revision checks |
+| `select_note`, `show_panel` | Select a page and show the running app |
+| `list_sidebar_groups`, `create_sidebar_group` | Read and create top-level groups |
+| `rename_sidebar_group`, `delete_sidebar_group` | Rename groups, or remove a group while keeping its pages |
+| `move_note_to_group` | Assign a page and its subtree to a group, or return it to the root |
+| `get_sidebar_tree`, `reorder_sidebar` | Read the complete ordered hierarchy and reorder siblings |
+| `get_note_presentation`, `search_page_icons`, `set_note_icon` | Read page appearance, search icons, and set emoji, SVG, or image icons |
+| `list_cover_presets`, `set_note_cover` | Browse cover presets and apply a preset or local image |
+| `get_note_blocks`, `edit_note_block` | Read, insert, update, delete, and move individual blocks |
+| `get_preferences`, `update_preferences` | Read and change theme, font, opacity, sizing, sidebar, and window pinning |
 
-Para ícones, use `set_note_icon` com `kind: "emoji"`, `"icon"` ou `"image"`; `search_page_icons` retorna os valores exatos. Para capas, use `set_note_cover` com `kind: "preset"` e o ID retornado por `list_cover_presets`, ou `kind: "image"`. Imagens devem ser caminhos locais absolutos: PNG, JPG, WebP, GIF ou SVG, até 10 MB; o Sparkpad copia o arquivo para seu armazenamento e mantém a imagem se o original for removido. Links remotos devem ser baixados pelo agente antes. Ícone e capa não alteram o conteúdo nem a revisão da nota.
+Content changes use `expected_revision` to prevent stale edits from overwriting newer work. Deleting a page with descendants requires `include_children: true`. Reordering requires every current sibling ID exactly once. Images use absolute local paths and are copied into Sparkpad's own asset storage.
 
-`edit_note_block` usa `action: "insert"`, `"update"`, `"delete"` ou `"move"` e índices base zero na revisão lida. Inserir/atualizar exige Markdown de um único bloco; mover usa `target_index` como posição final. Negrito, itálico, sublinhado (`<u>`), riscado, links, títulos, listas, tarefas, citações e código continuam sendo definidos em Markdown; os demais blocos preservam sua formatação.
+</details>
 
-`update_preferences` aceita apenas os campos enviados: `theme` (`dark`/`light`), `content_font` (`sans`/`serif`/`mono`), `opacity` (25–100%), `content_width` (40–100%), `font_size` (14–40 px), `sidebar_width` (180–420 px), `sidebar` e `always_on_top` (booleanos). Fontes afetam só conteúdo e título. Alterações aparecem no app aberto no intervalo de sincronização, ou na próxima abertura.
+## Your notes, truly yours
 
-Exemplo de pedido ao agente:
+Notes are saved automatically after a short typing pause, and when switching pages, hiding the panel, or quitting. SQLite uses WAL and optimistic revisions so the app and agents can safely share storage. If an agent changes a note while you are editing it, Sparkpad offers to preserve your local work as a new note.
 
-> Crie uma nota para organizar as ideias do meu novo projeto, com uma página principal e subpáginas para decisões e tarefas. Use Markdown, selecione a página principal e mostre o Sparkpad.
+- New installations store data at `~/Library/Application Support/Sparkpad/notes.sqlite3`.
+- Existing installations continue using the legacy `Interview Companion` data directory when present.
+- Run `sparkpad db-path` to find the active database.
+- Set `SPARKPAD_DB` to use another database; use the same value for the app and MCP clients. `INTERVIEW_COMPANION_DB` remains supported for compatibility.
 
-## Dados e verificação
+The MCP server opens no network ports. Page content is stored as Markdown; preferences, hierarchy, and presentation metadata live alongside it in SQLite.
 
-Novas instalações usam `~/Library/Application Support/Sparkpad/notes.sqlite3`. Instalações anteriores continuam usando o banco existente em `~/Library/Application Support/Interview Companion/notes.sqlite3`, preservando notas, hierarquia e preferências. `sparkpad db-path` mostra o caminho efetivo. `SPARKPAD_DB` permite escolher outro banco; `INTERVIEW_COMPANION_DB` continua aceito por compatibilidade. Configure o mesmo caminho no app e nos clientes MCP se usar essa opção.
+## Development
 
-SQLite usa WAL, espera por locks e revisões otimistas para concorrência entre processos. O MCP não abre portas de rede. A execução de `mcp` reserva stdout exclusivamente ao protocolo JSON-RPC.
+The monorepo contains the native Rust app at the root and the Astro website in [`apps/website`](apps/website).
 
 ```sh
+# Native application checks
 cargo test --locked
 cargo test --locked --no-default-features
 cargo check --locked
 python3 scripts/smoke_mcp.py target/debug/sparkpad
-```
 
-O smoke test usa um banco temporário e testa o servidor real por stdio, incluindo handshake, criação, atualização, conflito, seleção, exclusão e erros de protocolo.
-
-
-## Opções da página
-
-Ao passar o mouse sobre o título, aparecem **Adicionar ícone** e **Adicionar capa**, acima dele, sem deslocar o conteúdo. O seletor de ícone oferece emojis e atualiza também a sidebar. A galeria de capas oferece cores sólidas e gradientes desenhados pelo GPUI. A aba **Carregar** permite usar uma imagem local (PNG, JPG, WebP ou GIF). É possível trocar a capa ou removê-la pelo seletor. O ícone e a referência da capa também persistem ao reiniciar.
-
-## Notas filhas e árvore da sidebar
-
-O `+` no cabeçalho cria uma nota na raiz. O `+` que aparece ao passar o mouse sobre uma linha cria uma filha dessa nota. Cada filha pode ter outras filhas, sem limite de profundidade definido pelo app.
-
-Passe o mouse sobre a linha para trocar o ícone da página pela seta de expandir/recolher e mostrar os botões de adicionar filha e abrir o menu. O menu permite renomear, adicionar uma filha ou mover para a raiz. As linhas têm 30 px de altura, intervalo de 1 px, texto de 14 px e ícone de 14 px; a seta tem 12 px e os controles usam alvos de 20 px. Expandir uma página não mantém o fundo de hover. Clique na seta para expandir/recolher um ramo. Arraste uma nota sobre outra para torná-la filha; a subárvore acompanha o movimento. Solte sobre **SparkPad** para devolver à raiz. Com a árvore em foco, ↑/↓ navegam, → expande/entra, ← recolhe/volta e Enter foca o editor. Ramos expandidos ficam salvos, e uma nota selecionada pelo MCP revela seus ancestrais automaticamente.
-
-A estrutura segue a abordagem do [painel de projetos do Zed](https://github.com/zed-industries/zed/blob/main/crates/project_panel/src/project_panel.rs): índices por ID, uma lista plana das linhas visíveis e `gpui::uniform_list` para renderizar apenas a área visível. O modelo percorre a hierarquia de forma iterativa. A sidebar consulta metadados sem carregar o Markdown de todas as notas, e usa `PRAGMA data_version` para evitar reconstruções periódicas quando o banco não mudou.
-
-A migração adiciona `parent_id` sem alterar títulos ou textos existentes. As notas anteriores continuam na raiz. O banco valida pais existentes, rejeita ciclos e protege movimentos com revisões e transações. Para excluir uma nota com filhas, mova ou exclua as filhas primeiro; não há exclusão em cascata implícita.
-
-## Agrupadores da sidebar
-
-O botão de pasta com `+`, sempre visível ao lado de **SparkPad**, cria um grupo na raiz e permite nomeá-lo inline. Grupos são organizadores manuais (por exemplo, Favoritos ou Trabalho), sem Markdown, capa ou página própria. Não podem conter outros grupos. O espaço entre seções acompanha as páginas visíveis: ao recolher um grupo, o respiro abaixo dele desaparece e os cabeçalhos ficam próximos. Páginas e grupos vazios podem ser expandidos: exibem uma linha discreta “Vazio”, que desaparece ao recolher ou ao criar o primeiro item interno. Clique no nome ou na seta para recolher/expandir; os controles `+` e menu aparecem durante o hover. O `+` cria uma página dentro do grupo; o menu renomeia ou exclui apenas o agrupador, devolvendo suas páginas à raiz.
-
-Arraste uma página para o cabeçalho de um grupo para incluí-la; todas as descendentes acompanham. Se a página era filha, passa a ser raiz dentro do grupo. Arrastá-la sobre outra página a torna filha dessa página; soltar sobre **SparkPad** a devolve à raiz sem grupo. A árvore virtualizada inclui os cabeçalhos e só desenha as linhas visíveis. Grupos, associação das páginas e estado expandido são persistidos em SQLite. O MCP aceita `group_id` em `create_note` (não combine com `parent_id`) e oferece as cinco ferramentas de grupos descritas acima.
-
-## Ícones das páginas
-
-O seletor inspirado no Notion tem abas **Emoji**, **Ícones** e **Fazer upload**, busca, categorias, recentes, seleção aleatória e tons de pele. O catálogo Unicode 17 contém 3.944 sequências completas (incluindo variações de pele, gênero, famílias e bandeiras), com nomes e termos em português e inglês. O botão de tons oferece as variantes e **Todos**. A grade é virtualizada e o catálogo funciona offline. A aba Ícones usa os SVGs da Iconoir já embutidos na empire-ui. Emojis, ícones SVG e imagens próprias aparecem tanto no título quanto na sidebar.
-
-O upload aceita PNG, JPG, WebP, GIF e SVG, até 10 MB. A imagem é copiada para a pasta `.assets` ao lado do SQLite, sem depender do arquivo original. Remover ou trocar o ícone não modifica o Markdown nem a revisão da nota. A seleção e os últimos 30 ícones são persistidos. Licenças e fontes do catálogo estão em `assets/emoji/SOURCES.md` e acompanham o bundle.
-
-## Licença
-
-Sparkpad e a biblioteca empire-ui usam **AGPL-3.0-or-later**; consulte [LICENSE](LICENSE). As dependências GPUI e gpui-component mantêm suas licenças e avisos nos respectivos diretórios em `vendor`. Ícones, fontes e dados de emoji mantêm suas licenças em `assets` e são incluídos no pacote do app.
-
-A ferramenta `delete_note` aceita `include_children: true` para excluir a nota e todas as descendentes em uma única transação. Sem esse parâmetro, páginas com filhas continuam protegidas; `expected_revision` é obrigatório nos dois casos.
-
-Blocos de código têm um seletor de linguagem com 30 linguagens e texto simples. O destaque usa Tree-sitter da biblioteca GPUI, atualiza durante a edição e acompanha o tema claro/escuro. A linguagem fica na cerca Markdown (por exemplo, `javascript`, `rust` ou `python`), inclusive ao editar notas pelo MCP. Linguagens desconhecidas mantêm seu identificador e são exibidas como texto simples.
-
-Nos blocos de código, Tab insere dois espaços ou indenta as linhas selecionadas; Shift+Tab recua a indentação. O botão de copiar ao lado da linguagem copia somente o código, preservando espaços e quebras de linha. JavaScript/JSX, TypeScript e TSX (React + TypeScript) ficam no início do seletor.
-
-Com o foco em um bloco de código, Ctrl+A/⌘A seleciona apenas seu conteúdo. Seleção de código não abre a toolbar de formatação e os atalhos de negrito/itálico/sublinhado/código inline são ignorados. Copiar/recortar usa texto literal; apagar todo o código mantém o bloco e a linguagem. A formatação de uma seleção mista da página ignora os blocos de código.
-
-O bloco de código tem padding de 30 px em todos os lados. Seletor e copiar ficam em um container absoluto no canto superior direito, visível no hover (ou enquanto o dropdown está aberto), sem alterar a geometria do texto.
-
-## Landing page (Astro)
-
-O monorepo contém o app nativo Rust na raiz e a landing page independente em `apps/website`.
-
-```sh
+# Website development
 npm install
 npm run dev:web      # http://localhost:4173
 npm run check:web
-npm run build:web    # apps/website/dist
+npm run build:web
 ```
 
-A página padrão (`/`) é em inglês. O seletor no header permite português brasileiro (`/pt-br/`), espanhol (`/es/`) e francês (`/fr/`). Conteúdo, metadados, acessibilidade e a prévia interativa são traduzidos; todas as rotas são geradas estaticamente. Veja [apps/website/README.md](apps/website/README.md).
+The MCP smoke test uses a temporary database and exercises the real stdio server, including initialization, CRUD operations, revision conflicts, and protocol errors.
+
+The website is statically generated in English, Brazilian Portuguese, Spanish, and French. See the [website README](apps/website/README.md) for deployment, localization, assets, SEO, and Cloudflare analytics.
+
+### Built with
+
+| Layer | Technology |
+| :--- | :--- |
+| Native application | Rust, GPUI, and empire-ui |
+| Persistence | SQLite via rusqlite, Markdown documents |
+| Code highlighting | Tree-sitter |
+| Agent integration | Model Context Protocol over stdio |
+| Website | Astro and TypeScript, hosted on Cloudflare |
+
+Vendored UI dependencies include local patches documented in [`vendor/gpui/PATCHES.md`](vendor/gpui/PATCHES.md) and [`vendor/gpui-component/PATCHES.md`](vendor/gpui-component/PATCHES.md).
+
+## Contributing
+
+Bug reports, ideas, and pull requests are welcome. [Open an issue](https://github.com/mpires-dev/sparkpad/issues) with a clear description and steps to reproduce, or propose an improvement. For code changes, include the relevant checks and a screenshot when changing the UI.
+
+## License & acknowledgments
+
+Sparkpad and empire-ui are licensed under **AGPL-3.0-or-later**. See [LICENSE](LICENSE). Vendored dependencies retain their own licenses and notices.
+
+Thanks to [GPUI](https://www.gpui.rs/), the Fennel Motion empire-ui components, [Iconoir](https://iconoir.com/), and the open-source projects behind the editor and its assets. Font, emoji, and syntax notices are included in [`assets`](assets); website asset credits are documented in the [website README](apps/website/README.md#assets).
+
+---
+
+<p align="center">
+  <strong>One local file. A world of possibilities.</strong><br />
+  <sub>Made by <a href="https://github.com/mpires-dev">Matheus Pires</a> · If Sparkpad helps you think, consider giving it a star.</sub>
+</p>
