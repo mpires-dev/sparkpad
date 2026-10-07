@@ -43,4 +43,4 @@ The application icon and fonts are Sparkpad assets, with font licenses in `publi
 
 Language flags are local round SVGs from [Circle Flags](https://github.com/HatScripts/circle-flags) (MIT); the license is stored in `public/assets/licenses/circle-flags-MIT.txt`.
 
-Conversation loading indicators use the diagonal [Blocks spinner from loading.dev](https://loading.dev/spinners/blocks), by Jakub Krehel (MIT). The small Astro adaptation retains its grid, sweep timing, pause control and reduced-motion support; the license is in `public/assets/licenses/loading-dev-MIT.txt`.
+Conversation loading indicators use the diagonal [Blocks spinner from loading.dev](https://loading.dev/spinners/blocks), by Jakub Krehel (MIT). The small Astro adaptation retains its grid, sweep timing and reduced-motion support; the license is in `public/assets/licenses/loading-dev-MIT.txt`.

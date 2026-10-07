@@ -116,10 +116,10 @@
 .desktop-menubar{background:#ffffff26;backdrop-filter:blur(18px) saturate(1.15);-webkit-backdrop-filter:blur(18px) saturate(1.15);color:#39343f;border-bottom:1px solid #ffffff26}
 .desktop-wallpaper{background:transparent}
 
-/* Display enclosure in the landing page primary purple. */
-.demo-stage{border-color:var(--purple);box-shadow:0 25px 50px -30px #38334266}
+/* Muted lavender display enclosure. */
+.demo-stage{border-color:#9186b2;box-shadow:0 25px 50px -30px #38334266}
 
-.app-window.dark .app-sidebar{border-right-color:rgba(255,255,255,.08)}
+.app-window.dark .app-sidebar{border-right-color:rgba(255,255,255,.05)}
 
 .app-window.dark .demo-cover{background:radial-gradient(ellipse 65% 170% at 8% 40%,#55555580,transparent),radial-gradient(ellipse 55% 170% at 92% 110%,#3f655080,transparent),linear-gradient(110deg,#333333,#2c3430 55%,#233d30);color:#d1ddd5}
 
@@ -187,3 +187,28 @@
 .site-footer>div:first-child{display:flex;align-items:center;gap:18px;min-width:0}
 .site-footer>div:first-child>p{margin:0;padding-left:18px;border-left:1px solid #ded9e5;line-height:1.5;font-size:13px}
 @media(max-width:560px){.site-footer>div:first-child{gap:12px}.site-footer>div:first-child>p{padding-left:12px;font-size:12px}}
+
+/* A populated, scrollable note hierarchy inside the product preview. */
+.app-sidebar,.app-main{min-height:0}
+.demo-sidebar-tree{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:#484848 transparent}
+.app-sidebar>.window-controls,.app-sidebar>.app-brand,.app-sidebar>.app-sidebar-footer{flex-shrink:0}
+.demo-sidebar-tree .note-item{min-height:28px;padding-top:6px;padding-bottom:6px}
+.demo-sidebar-tree .nested-note{padding-left:47px}
+.static-note{cursor:default}
+.static-note>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.app-window .static-note:hover{background:transparent}
+@media(max-width:800px){.demo-sidebar-tree .nested-note{padding-left:39px}}
+
+/* One shared footer baseline and quieter separators throughout the app preview. */
+.app-sidebar-footer{height:32px;padding:0 16px;flex-shrink:0}
+.app-window.dark{--app-dark-border:rgba(255,255,255,.05)}
+.app-window{box-shadow:0 20px 50px -20px #30283d80,0 0 0 1px #ffffff0d}
+
+.demo-scroll{scrollbar-width:none}
+.demo-scroll::-webkit-scrollbar{display:none}
+
+.agent-conversation .solar-icon{--icon-primary:#69646f;--icon-secondary:#a5a0ab}
+.agent-conversation .tool-check .solar-icon{--icon-primary:#77727e;--icon-secondary:#a5a0ab}
+
+.conversation-playback{justify-content:flex-end}
+

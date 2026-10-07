@@ -11,7 +11,6 @@ if (card) {
   const promptOutput = card.querySelector('[data-stream="prompt"]');
   const responseOutput = card.querySelector('[data-stream="response"]');
   const stage = card.querySelector('[data-stage-label]');
-  const pauseButton = card.querySelector('.conversation-pause');
   const tools = [...card.querySelectorAll('[data-tool]')];
   const splitText = value => {
     if (typeof Intl.Segmenter === 'function') return [...new Intl.Segmenter(document.documentElement.lang, {granularity: 'grapheme'}).segment(value)].map(part => part.segment);
@@ -30,7 +29,6 @@ if (card) {
   let previousTime = null;
   let frame = null;
   let inView = false;
-  let paused = false;
   let cycles = 0;
   const stream = (output, text, start, length, time) => {
     const fraction = Math.max(0, Math.min(1, (time - start) / length));
@@ -67,6 +65,7 @@ if (card) {
   }
   function tick(now) {
     frame = null;
+    if (reducedMotion.matches) { sync(); return; }
     if (!shouldRun()) { previousTime = null; return; }
     if (previousTime !== null) {
       elapsed += Math.min(now - previousTime, 100);
@@ -76,7 +75,7 @@ if (card) {
     render(elapsed);
     frame = requestAnimationFrame(tick);
   }
-  function shouldRun() { return inView && !paused && !document.hidden && !reducedMotion.matches; }
+  function shouldRun() { return inView && !document.hidden && !reducedMotion.matches; }
   function sync() {
     if (frame !== null) cancelAnimationFrame(frame);
     frame = null;
@@ -85,21 +84,12 @@ if (card) {
       card.classList.remove('is-animated');
       render(12500);
       stage.textContent = t('Demonstração em loop');
-      pauseButton.hidden = true;
     } else {
       card.classList.add('is-animated');
-      pauseButton.hidden = false;
       render(elapsed);
       if (shouldRun()) frame = requestAnimationFrame(tick);
     }
   }
-  pauseButton.addEventListener('click', () => {
-    paused = !paused;
-    pauseButton.setAttribute('aria-pressed', String(paused));
-    pauseButton.setAttribute('aria-label', t(paused ? 'Retomar animação' : 'Pausar animação'));
-    pauseButton.querySelector('[data-playback-label]').textContent = t(paused ? 'Retomar' : 'Pausar');
-    sync();
-  });
   const observer = new IntersectionObserver(entries => { inView = entries[0].isIntersecting; sync(); }, {threshold: 0.2});
   observer.observe(card);
   document.addEventListener('visibilitychange', sync);
