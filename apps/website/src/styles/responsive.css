@@ -1,0 +1,137 @@
+/* Fixed desktop canvases scale as a whole. Their wrappers reserve the exact aspect ratio. */
+.demo-viewport{width:calc(100% - 190px);max-width:1160px;aspect-ratio:1160 / 651;position:relative;margin:58px auto 0;scroll-margin-top:100px}
+.demo-viewport .demo-stage{position:absolute;top:0;left:0;width:1160px;height:651px;max-width:none;margin:0;border-width:9px;--frame-width:9px;--frame-radius:22px;transform:scale(var(--preview-scale,1));transform-origin:top left}
+.demo-viewport .desktop-menubar{height:22px;padding:0 15px;font-size:9px}
+.demo-viewport .desktop-menubar>span:last-child{display:inline}
+.demo-viewport .desktop-wallpaper{padding:36px 56px 45px}
+.demo-viewport .desktop-file{display:block}
+.demo-viewport .app-window{grid-template-columns:205px minmax(0,1fr);height:530px;border-radius:11px}
+.demo-viewport .app-window.sidebar-closed{grid-template-columns:0 minmax(0,1fr)}
+.demo-viewport .app-sidebar{visibility:visible}
+.demo-viewport .app-main>.restore-sidebar[hidden]{display:none!important}
+.demo-viewport .app-main>.restore-sidebar:not([hidden]){display:flex!important}
+.demo-viewport .app-brand{font-size:15px}
+.demo-viewport .note-item{font-size:11px;padding-left:9px;padding-right:9px}
+.demo-viewport .child-note{padding-left:31px}
+.demo-viewport .nested-note{padding-left:47px}
+.demo-viewport .demo-cover{height:108px;font-size:12px}
+.demo-viewport .demo-document{padding:0 36px 95px}
+.demo-viewport .app-window.narrow .demo-document{max-width:440px;padding-left:24px;padding-right:24px}
+.demo-viewport .demo-document h2{font-size:29px}
+.demo-viewport .demo-document p,.demo-viewport .demo-document .editor-line{font-size:12px}
+.demo-viewport .page-emoji{font-size:40px;width:56px;height:56px}
+.demo-viewport .demo-scroll{margin-top:-32px}
+.demo-viewport .demo-label{font-size:9px}
+
+/* The editor close-up retains the same crop and typography at every screen size. */
+.detail-art{position:relative;aspect-ratio:496 / 425;height:auto;min-height:0;padding:0}
+.detail-art-scene{position:absolute;top:0;left:0;width:496px;height:425px;padding:48px 0 0 48px;display:flex;align-items:flex-start;transform:scale(var(--preview-scale,1));transform-origin:top left}
+.detail-art .mini-note{max-width:none;min-height:405px;padding:36px 40px 58px}
+.detail-art .mini-note h3{font-size:33px}
+.detail-art .mini-toolbar{top:64px;right:16px}
+.detail-art .floating-tag{bottom:22px;right:22px}
+
+@media(max-width:1100px){.demo-viewport{width:calc(100% - 90px)}}
+@media(max-width:900px){
+  .detail-section,.faq{grid-template-columns:1fr;gap:36px}
+  .detail-art{width:100%;max-width:560px;margin:auto}
+  .detail-copy>p{max-width:600px}
+  .agent-grid{grid-template-columns:1fr}
+  .agents-heading{align-items:flex-start;flex-direction:column;gap:22px}
+  .agents-heading>p{max-width:600px}
+  .agents-heading>p br{display:none}
+  .agents-heading>p{white-space:normal}
+}
+@media(max-width:800px){
+  .demo-viewport{width:calc(100% - 40px);margin-top:36px}
+  .site-header .button-small{display:none}
+  .site-header .brand{font-size:22px;gap:9px}
+  .site-header .brand img{width:32px;height:32px}
+  .site-header,.site-header.is-floating{padding-left:18px;padding-right:18px}
+  .nav-actions{gap:10px}
+  .site-header .mobile-menu{width:40px;height:40px}
+  .site-header .mobile-menu .solar-icon{width:22px;height:22px}
+  .language-switcher summary{font-size:13px;min-height:40px;padding:8px;gap:6px}
+  .language-switcher summary>.locale-globe{width:18px;height:18px}
+  .language-switcher summary>.locale-chevron{width:12px;height:12px}
+  .language-switcher nav,.site-header.is-floating .language-switcher nav{right:0;min-width:225px}
+  .language-switcher nav a{font-size:14px;padding:12px;min-height:44px}
+  .mobile-nav a{font-size:16px;min-height:44px}
+}
+@media(max-width:700px){
+  .section-wrap{padding:60px 22px}
+  .hero-content{padding:38px 20px 0}
+  .mode-tabs{margin:0 auto}
+  .mode-tabs button{font-size:12px;padding:9px 12px;gap:6px}
+  .hero h1{font-size:clamp(36px,8vw,52px);margin-top:30px;max-width:520px;line-height:1.08;text-wrap:balance}
+  .hero-description{font-size:18px;line-height:1.6;max-width:32ch;margin-top:24px}
+  .hero-actions{flex-direction:column;max-width:330px;margin:26px auto 0;gap:12px}
+  .hero-actions .button{font-size:15px;height:50px}
+  .hero-note{font-size:14px;line-height:1.6;max-width:280px;margin:20px auto 0}
+  .platform-note{font-size:12px;flex-wrap:wrap;gap:6px 10px;line-height:1.5}
+  .demo-viewport{width:calc(100% - 24px);margin-top:30px}
+  .demo-caption{font-size:12px;line-height:1.6;margin-top:18px;padding:0 22px}
+  .section-eyebrow{font-size:10px;line-height:1.5;letter-spacing:.12em;margin-bottom:16px}
+  .intro h2,.detail-copy h2,.agents-heading h2,.ownership h2,.faq h2{font-size:clamp(30px,7.5vw,38px);line-height:1.15;text-wrap:balance}
+  .section-description,.ownership-heading>p,.agents-heading>p{font-size:18px;line-height:1.6}
+  .feature-grid{grid-template-columns:1fr;gap:26px;margin-top:34px}
+  .feature-grid article{position:relative;padding-left:56px}
+  .feature-icon{position:absolute;top:0;left:0;width:38px;height:38px;border-radius:11px}
+  .feature-icon .solar-icon{width:23px;height:23px}
+  .feature-grid h3{font-size:22px;line-height:1.3;margin-bottom:10px}
+  .feature-grid p,.detail-copy>p{font-size:17px;line-height:1.7}
+  .feature-grid a{font-size:16px;min-height:44px;padding-top:14px}
+  .detail-section{gap:32px}
+  .detail-list{gap:15px;margin-top:22px}
+  .detail-list li{font-size:16px;line-height:1.6}
+  .agent-conversation,.agent-setup{padding:22px;border-radius:16px}
+  .conversation-title{font-size:16px;gap:8px}
+  .chat-user{font-size:16px;margin-left:26px;padding:14px 16px;margin-bottom:24px}
+  .chat-agent{gap:10px}
+  .chat-agent p{font-size:16px;line-height:1.6}
+  .agent-tool{display:grid;grid-template-columns:16px minmax(0,1fr);gap:6px 9px;font-size:12px;padding:12px}
+  .tool-result,.agent-tool.is-complete .tool-result{grid-column:2;margin-left:0;font-size:13px;max-width:none;line-height:1.5;white-space:normal;overflow-wrap:anywhere}
+  .conversation-stage{font-size:11px}
+  .conversation-bottom{font-size:12px;gap:8px;margin-top:24px}
+  .agent-setup pre{font-size:12px;line-height:1.8}
+  .setup-top,.agent-setup>p,.agent-setup>a{font-size:14px}
+  .agent-setup>a{min-height:44px;align-items:center;gap:12px}
+  .ownership-grid{grid-template-columns:1fr;gap:14px;margin-top:30px}
+  .ownership-grid article{position:relative;padding:24px 24px 24px 84px;min-height:132px}
+  .ownership-grid article>.solar-icon{position:absolute;top:24px;left:24px;width:42px;height:42px}
+  .ownership-grid h3{font-size:21px}
+  .ownership-grid p{font-size:17px;line-height:1.65}
+  .ownership>.button{font-size:15px;min-height:50px}
+  .faq{gap:22px}
+  .faq>div>p,.faq details>p{font-size:16px;line-height:1.7}
+  .faq summary{font-size:17px;line-height:1.5;padding:18px 0;align-items:flex-start}
+  .faq summary>span{padding-top:3px;flex-shrink:0}
+  .faq details>p{padding-right:0}
+  .final-cta{padding:44px 22px;border-radius:20px}
+  .final-cta h2{font-size:clamp(32px,8vw,42px);line-height:1.12;text-wrap:balance}
+  .final-cta p{font-size:18px;line-height:1.6}
+  .final-cta .button{font-size:15px;height:50px;max-width:100%}
+  .cta-note{font-size:12px;line-height:1.6}
+  .site-footer{padding:32px 22px;gap:24px}
+  .site-footer>div:first-child{width:100%;gap:14px}
+  .site-footer .brand{font-size:21px;flex-shrink:0}
+  .site-footer>div:first-child>p{font-size:13px;padding-left:14px}
+  .footer-links{font-size:15px;width:100%;gap:8px 22px;margin-left:0}
+  .footer-links a{min-height:44px}
+  .footer-credit{font-size:12px;flex-direction:column;align-items:flex-start;gap:8px;line-height:1.6}
+}
+@media(max-width:360px){
+  .site-header .brand{font-size:20px}
+  .site-header,.site-header.is-floating{padding-left:12px;padding-right:12px}
+  .nav-actions{gap:4px}
+  .hero-content{padding-left:16px;padding-right:16px}
+  .section-wrap{padding-left:18px;padding-right:18px}
+  .agent-conversation,.agent-setup{padding:18px}
+  .connection-pill{font-size:10px;padding:4px 6px}
+  .conversation-title{font-size:15px}
+  .site-footer>div:first-child{gap:10px}
+  .site-footer>div:first-child>p{padding-left:10px;font-size:12px}
+}
+.demo-viewport{overflow:hidden;border-radius:calc(22px * var(--preview-scale,1));box-shadow:0 18px 40px -24px #38334266}
+@media(max-width:700px){.tool-result{min-height:3em}}
+@media(max-width:360px){.tool-result{min-height:4.5em}}

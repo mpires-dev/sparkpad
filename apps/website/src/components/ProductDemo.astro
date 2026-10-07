@@ -4,7 +4,8 @@ interface Props {locale: Locale;}
 const {locale} = Astro.props;
 const t = translator(locale);
 ---
-  <div class="demo-stage" id="produto">
+  <div class="demo-viewport" id="produto" data-preview-width="1160">
+  <div class="demo-stage">
     <div class="desktop-menubar" aria-hidden="true"><span>● &nbsp; <b>Sparkpad</b>   {t("Arquivo   Editar   Visualizar")}</span><span>{t("◒   ▰   Ter, 6 out   09:41")}</span></div>
     <div class="desktop-wallpaper">
       <div class="desktop-file" aria-hidden="true"><img src="/assets/sparkpad.png" alt=""><span>Sparkpad</span></div>
@@ -30,5 +31,6 @@ const t = translator(locale);
 </div></div><div class="app-footer"><span class="demo-label">{t("Prévia interativa")}</span><div class="footer-controls"><button class="icon-button demo-width" aria-label={t("Alternar largura do conteúdo")} title={t("Largura do conteúdo")}><img class="icon" src="/assets/icons/view-columns-3.svg" alt=""></button><button class="icon-button demo-font" aria-label={t("Alternar fonte do conteúdo")} title={t("Trocar fonte")}>Aa</button><button class="icon-button demo-theme" aria-label={t("Usar tema claro na demonstração")} title={t("Alternar tema")}><img class="icon" src="/assets/icons/half-moon.svg" alt=""></button><button class="icon-button demo-pin" aria-label={t("Fixar demonstração")} aria-pressed="false" title={t("Fixar painel")}><img class="icon" src="/assets/icons/pin.svg" alt=""></button></div></div></div>
       </div>
     </div>
+  </div>
   </div>
   <p class="demo-caption"><span class="status-dot"></span> {t("Experimente: escolha uma nota, edite um texto ou troque o tema.")} <span class="caption-hint">{t("É leve até na prévia.")}</span></p>

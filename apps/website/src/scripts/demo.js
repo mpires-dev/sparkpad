@@ -111,3 +111,11 @@ window.addEventListener('scroll', () => {
 window.addEventListener('pageshow', updateFloatingHeader);
 updateFloatingHeader();
 
+// Scale complete desktop scenes, rather than reflowing the app into narrow columns.
+const previewObserver = new ResizeObserver(entries => {
+  for (const {target, contentRect} of entries) {
+    const scale = contentRect.width / Number(target.dataset.previewWidth);
+    target.style.setProperty('--preview-scale', String(scale));
+  }
+});
+$$('[data-preview-width]').forEach(element => previewObserver.observe(element));
