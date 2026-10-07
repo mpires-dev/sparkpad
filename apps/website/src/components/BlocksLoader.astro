@@ -1,0 +1,8 @@
+---
+// Diagonal Blocks spinner from https://loading.dev/spinners/blocks (MIT).
+interface Props {class?: string;}
+const {class: className = ''} = Astro.props;
+---
+<span class={`ld-blocks ${className}`} aria-hidden="true">
+  {[0,1,2,1,2,3,2,3,4].map(step => <span class="ld-blocks-cell" style={`--ld-step:${step}`} />)}
+</span>

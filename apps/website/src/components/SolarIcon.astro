@@ -1,0 +1,55 @@
+---
+import text_square from '../assets/solar/text-square.svg?raw';
+import folder from '../assets/solar/folder.svg?raw';
+import bolt from '../assets/solar/bolt.svg?raw';
+import code from '../assets/solar/code.svg?raw';
+import code_circle from '../assets/solar/code-circle.svg?raw';
+import arrow_right from '../assets/solar/arrow-right.svg?raw';
+import arrow_down from '../assets/solar/arrow-down.svg?raw';
+import arrow_right_up from '../assets/solar/arrow-right-up.svg?raw';
+import alt_arrow_down from '../assets/solar/alt-arrow-down.svg?raw';
+import check_circle from '../assets/solar/check-circle.svg?raw';
+import hamburger_menu from '../assets/solar/hamburger-menu.svg?raw';
+import global from '../assets/solar/global.svg?raw';
+import laptop_minimalistic from '../assets/solar/laptop-minimalistic.svg?raw';
+import stars from '../assets/solar/stars.svg?raw';
+import copy from '../assets/solar/copy.svg?raw';
+import pause from '../assets/solar/pause.svg?raw';
+import play from '../assets/solar/play.svg?raw';
+import add from '../assets/solar/add.svg?raw';
+import ssd_round from '../assets/solar/ssd-round.svg?raw';
+import code_square from '../assets/solar/code-square.svg?raw';
+import refresh from '../assets/solar/refresh.svg?raw';
+const icons = {
+  'text-square': text_square,
+  'folder': folder,
+  'bolt': bolt,
+  'code-circle': code_circle,
+  'code': code,
+  'arrow-right': arrow_right,
+  'arrow-down': arrow_down,
+  'arrow-right-up': arrow_right_up,
+  'alt-arrow-down': alt_arrow_down,
+  'check-circle': check_circle,
+  'hamburger-menu': hamburger_menu,
+  'global': global,
+  'laptop-minimalistic': laptop_minimalistic,
+  'stars': stars,
+  'copy': copy,
+  'pause': pause,
+  'play': play,
+  'add': add,
+  'ssd-round': ssd_round,
+  'code-square': code_square,
+  'refresh': refresh
+};
+const boldIcons = import.meta.glob<string>('../assets/solar/bold/*.svg', {
+  query: '?raw', import: 'default', eager: true,
+});
+interface Props {name: keyof typeof icons; class?: string; variant?: 'duotone' | 'bold';}
+const {name, class: className = '', variant = 'duotone'} = Astro.props;
+const source = variant === 'bold' ? boldIcons[`../assets/solar/bold/${name}.svg`] : icons[name];
+if (!source) throw new Error(`Missing Solar ${variant} icon: ${name}`);
+const markup = source.replace(/class="[^"]*"/, `class="icon solar-icon solar-${variant} ${className}" aria-hidden="true" focusable="false"`);
+---
+<Fragment set:html={markup} />

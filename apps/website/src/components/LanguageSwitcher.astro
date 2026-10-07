@@ -1,0 +1,15 @@
+---
+import SolarIcon from './SolarIcon.astro';
+import {languages, localePath, translator, type Locale} from '../i18n';
+interface Props {locale: Locale;}
+const {locale} = Astro.props;
+const t = translator(locale);
+const flags: Record<Locale, string> = {en: 'us', 'pt-br': 'br', es: 'es', fr: 'fr'};
+const current = languages.find(language => language.locale === locale)!;
+---
+<details class="language-switcher">
+  <summary aria-label={t('Selecionar idioma')}><SolarIcon variant="bold" name="global" class="locale-globe" /><span>{current.short}</span><SolarIcon variant="bold" name="alt-arrow-down" class="locale-chevron" /></summary>
+  <nav aria-label={t('Idioma')}>
+    {languages.map(language => <a href={localePath(language.locale)} lang={language.lang} hreflang={language.lang} aria-current={language.locale === locale ? 'page' : undefined}><span class="language-option"><img class="language-flag" src={`/assets/flags/${flags[language.locale]}.svg`} width="20" height="20" alt="" /><span>{language.label}</span></span>{language.locale === locale && <SolarIcon variant="bold" name="check-circle" />}</a>)}
+  </nav>
+</details>
