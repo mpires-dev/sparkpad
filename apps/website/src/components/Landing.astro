@@ -2,10 +2,11 @@
 import '../styles/global.css';
 import '../styles/responsive.css';
 import SolarIcon from './SolarIcon.astro';
+import SEO from './SEO.astro';
 import LanguageSwitcher from './LanguageSwitcher.astro';
 import ProductDemo from './ProductDemo.astro';
 import AgentConversation from './AgentConversation.astro';
-import {translator, getDictionary, languages, localePath, type Locale} from '../i18n';
+import {translator, getDictionary, localePath, type Locale} from '../i18n';
 interface Props {locale: Locale;}
 const {locale} = Astro.props;
 const t = translator(locale);
@@ -14,15 +15,10 @@ const t = translator(locale);
 <html lang={locale === "pt-br" ? "pt-BR" : locale}>
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{t("Sparkpad — Um lugar leve para pensar.")}</title>
-  <meta name="description" content={t("Seu bloco de notas nativo para Mac. Markdown, páginas aninhadas e MCP para trabalhar com seus agentes. Local, leve e open source.")}>
-  <meta name="theme-color" content="#edf0f7">
-  <link rel="icon" type="image/png" href="/assets/sparkpad.png">
+  <SEO locale={locale} />
   <link rel="preload" href="/assets/fonts/NV_Legible_Next-Regular.ttf" as="font" type="font/ttf" crossorigin>
   <script src="../scripts/demo.js"></script>
   <script id="translations" type="application/json" set:html={JSON.stringify(getDictionary(locale)).replace(/</g, "\\u003c")} />
-  {languages.map(language => <link rel="alternate" hreflang={language.lang} href={localePath(language.locale)} />)}
-  <link rel="alternate" hreflang="x-default" href="/" />
 </head>
 <body>
 <a class="skip-link" href="#main">{t("Pular para o conteúdo")}</a>

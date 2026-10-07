@@ -1,0 +1,39 @@
+---
+import {languages, localePath, type Locale} from '../i18n';
+import {absoluteUrl, ogLocales, pageMetadata, structuredData} from '../lib/seo';
+interface Props {locale: Locale;}
+const {locale} = Astro.props;
+const meta = pageMetadata(locale);
+---
+<title>{meta.title}</title>
+<meta name="description" content={meta.description}>
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="author" content="Matheus Pires">
+<meta name="application-name" content="Sparkpad">
+<meta name="theme-color" content="#edf0f7">
+<link rel="canonical" href={meta.canonical}>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="sitemap" type="application/xml" href="/sitemap.xml">
+{languages.map(language => <link rel="alternate" hreflang={language.lang} href={absoluteUrl(localePath(language.locale))} />)}
+<link rel="alternate" hreflang="x-default" href={absoluteUrl('/')}>
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Sparkpad">
+<meta property="og:title" content={meta.title}>
+<meta property="og:description" content={meta.description}>
+<meta property="og:url" content={meta.canonical}>
+<meta property="og:locale" content={ogLocales[locale]}>
+{languages.filter(language => language.locale !== locale).map(language => <meta property="og:locale:alternate" content={ogLocales[language.locale]} />)}
+<meta property="og:image" content={meta.image}>
+<meta property="og:image:secure_url" content={meta.image}>
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content={meta.imageAlt}>
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content={meta.title}>
+<meta name="twitter:description" content={meta.description}>
+<meta name="twitter:image" content={meta.image}>
+<meta name="twitter:image:alt" content={meta.imageAlt}>
+<script type="application/ld+json" set:html={JSON.stringify(structuredData(locale)).replace(/</g, '\\u003c')} />

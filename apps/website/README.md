@@ -14,6 +14,23 @@ npm run build:web     # apps/website/dist
 npm run preview:web   # serve the generated static pages
 ```
 
+## Cloudflare deployment
+
+Production hostname: `https://sparkpad.mplabs.sh`.
+
+The landing deploys as a static-assets-only Worker using `wrangler.jsonc`. Cloudflare manages the custom-domain DNS record and TLS certificate once `mplabs.sh` is active in the configured account. HTML URLs retain their trailing slashes; unknown paths return 404.
+
+From the repository root, authenticate with `npx wrangler login` or provide `CLOUDFLARE_API_TOKEN` through your shell/CI environment, then run:
+
+```sh
+npm run check:web
+npm run deploy:web
+```
+
+The token must allow Worker deployments and custom-domain management in the configured account and zone. Credentials are never stored in the Wrangler config. Local Wrangler state and development secrets are ignored by Git.
+
+The current download archive is deployed alongside the static assets. Generate it using the instructions below before deploying from a fresh checkout; archives are ignored by Git.
+
 ## Languages
 
 - `/`: English (default)
@@ -35,7 +52,7 @@ mkdir -p apps/website/public/downloads
 ditto -c -k --sequesterRsrc --keepParent dist/Sparkpad.app apps/website/public/downloads/Sparkpad-macOS.zip
 ```
 
-Download archives are ignored by Git. Before public hosting, replace local links with a published release artifact.
+Download archives are ignored by Git. For a deployment from a fresh checkout, generate the archive first or point the download links to a published release artifact.
 
 ## Assets
 
@@ -44,3 +61,15 @@ The application icon and fonts are Sparkpad assets, with font licenses in `publi
 Language flags are local round SVGs from [Circle Flags](https://github.com/HatScripts/circle-flags) (MIT); the license is stored in `public/assets/licenses/circle-flags-MIT.txt`.
 
 Conversation loading indicators use the diagonal [Blocks spinner from loading.dev](https://loading.dev/spinners/blocks), by Jakub Krehel (MIT). The small Astro adaptation retains its grid, sweep timing and reduced-motion support; the license is in `public/assets/licenses/loading-dev-MIT.txt`.
+
+## Search and sharing
+
+`SEO.astro` renders translated titles/descriptions, self-referencing canonical URLs, absolute language alternates, Open Graph and Twitter cards, and JSON-LD for the creator, website, desktop application, and localized page. Metadata and structured data share `src/lib/seo.ts`.
+
+Favicon PNG/ICO and Apple touch icons use the app symbol. Each language has a 1200×630 social preview in `public/assets/social/`. Static endpoints generate `/sitemap.xml`, `/robots.txt`, and `/llms.txt`; the sitemap includes every language alternative and the English default.
+
+## Analytics
+
+Cloudflare Web Analytics is enabled for the production zone with automatic installation. Cloudflare injects a single beacon at the edge for browser traffic; no duplicate snippet is bundled in the landing. Local development and static build files contain no analytics script or account credentials. The Web Analytics site ID is `8e8b7019d764458b8b8a0cce220a4b54`.
+
+View visits, page views, referrers, countries, devices, and performance in [Cloudflare Web Analytics](https://dash.cloudflare.com/9df86d30a0fe3f66ba114bce88d83eee/web-analytics).
