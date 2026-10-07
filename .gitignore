@@ -13,3 +13,5 @@
 *.db-*
 *.mcp-sessions/
 *.assets/
+
+/node_modules/

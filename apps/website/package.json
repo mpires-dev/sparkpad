@@ -1,0 +1,14 @@
+{
+  "name": "@sparkpad/website",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --host 127.0.0.1 --port 4173",
+    "build": "astro build",
+    "preview": "astro preview --host 127.0.0.1 --port 4173",
+    "check": "astro check && node --test tests/i18n.test.mjs"
+  },
+  "dependencies": {"astro": "7.3.6"},
+  "devDependencies": {"@astrojs/check": "^0.9.6", "typescript": "^5.9.3"}
+}

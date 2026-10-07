@@ -1,0 +1,4 @@
+/public/downloads/*.zip
+/node_modules/
+/dist/
+/.astro/
