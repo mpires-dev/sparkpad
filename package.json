@@ -1,11 +1,14 @@
 {
   "name": "sparkpad",
   "private": true,
-  "workspaces": ["apps/website"],
+  "workspaces": [
+    "apps/website"
+  ],
   "scripts": {
     "dev:web": "npm run dev --workspace=@sparkpad/website",
     "build:web": "npm run build --workspace=@sparkpad/website",
     "preview:web": "npm run preview --workspace=@sparkpad/website",
-    "check:web": "npm run check --workspace=@sparkpad/website"
+    "check:web": "npm run check --workspace=@sparkpad/website",
+    "deploy:web": "npm run deploy --workspace=@sparkpad/website"
   }
 }

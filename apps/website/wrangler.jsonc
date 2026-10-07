@@ -1,0 +1,18 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sparkpad-website",
+  "account_id": "9df86d30a0fe3f66ba114bce88d83eee",
+  "compatibility_date": "2026-10-06",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "sparkpad.mplabs.sh",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "force-trailing-slash",
+    "not_found_handling": "none"
+  }
+}
