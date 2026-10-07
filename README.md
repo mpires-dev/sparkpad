@@ -187,3 +187,16 @@ Nos blocos de código, Tab insere dois espaços ou indenta as linhas selecionada
 Com o foco em um bloco de código, Ctrl+A/⌘A seleciona apenas seu conteúdo. Seleção de código não abre a toolbar de formatação e os atalhos de negrito/itálico/sublinhado/código inline são ignorados. Copiar/recortar usa texto literal; apagar todo o código mantém o bloco e a linguagem. A formatação de uma seleção mista da página ignora os blocos de código.
 
 O bloco de código tem padding de 30 px em todos os lados. Seletor e copiar ficam em um container absoluto no canto superior direito, visível no hover (ou enquanto o dropdown está aberto), sem alterar a geometria do texto.
+
+## Landing page (Astro)
+
+O monorepo contém o app nativo Rust na raiz e a landing page independente em `apps/website`.
+
+```sh
+npm install
+npm run dev:web      # http://localhost:4173
+npm run check:web
+npm run build:web    # apps/website/dist
+```
+
+A página padrão (`/`) é em inglês. O seletor no header permite português brasileiro (`/pt-br/`), espanhol (`/es/`) e francês (`/fr/`). Conteúdo, metadados, acessibilidade e a prévia interativa são traduzidos; todas as rotas são geradas estaticamente. Veja [apps/website/README.md](apps/website/README.md).
