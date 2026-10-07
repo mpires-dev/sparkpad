@@ -1,0 +1,74 @@
+---
+import '../styles/global.css';
+import SolarIcon from './SolarIcon.astro';
+import LanguageSwitcher from './LanguageSwitcher.astro';
+import ProductDemo from './ProductDemo.astro';
+import AgentConversation from './AgentConversation.astro';
+import {translator, getDictionary, languages, localePath, type Locale} from '../i18n';
+interface Props {locale: Locale;}
+const {locale} = Astro.props;
+const t = translator(locale);
+---
+<!doctype html>
+<html lang={locale === "pt-br" ? "pt-BR" : locale}>
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{t("Sparkpad — Um lugar leve para pensar.")}</title>
+  <meta name="description" content={t("Seu bloco de notas nativo para Mac. Markdown, páginas aninhadas e MCP para trabalhar com seus agentes. Local, leve e open source.")}>
+  <meta name="theme-color" content="#edf0f7">
+  <link rel="icon" type="image/png" href="/assets/sparkpad.png">
+  <link rel="preload" href="/assets/fonts/NV_Legible_Next-Regular.ttf" as="font" type="font/ttf" crossorigin>
+  <script src="../scripts/demo.js"></script>
+  <script id="translations" type="application/json" set:html={JSON.stringify(getDictionary(locale)).replace(/</g, "\\u003c")} />
+  {languages.map(language => <link rel="alternate" hreflang={language.lang} href={localePath(language.locale)} />)}
+  <link rel="alternate" hreflang="x-default" href="/" />
+</head>
+<body>
+<a class="skip-link" href="#main">{t("Pular para o conteúdo")}</a>
+<header class="site-header">
+  <a class="brand" href={localePath(locale)} aria-label={t("Sparkpad, início")}><img src="/assets/sparkpad.png" alt="" width="34" height="34"><span>Sparkpad</span></a>
+  <nav class="desktop-nav" aria-label={t("Navegação principal")}><a href="#produto">{t("Produto")}</a><a href="#detalhes">{t("Recursos")}</a><a href="#agentes">{t("Para agentes")} <span class="nav-badge">MCP</span></a><a href="#perguntas">{t("Perguntas")}</a></nav>
+  <div class="nav-actions"><LanguageSwitcher locale={locale} /><a class="github-link" href="https://github.com/mpires-dev/sparkpad" target="_blank" rel="noopener noreferrer"><SolarIcon variant="bold" name="code-circle" />GitHub <span><SolarIcon variant="bold" name="arrow-right-up" /></span></a><a class="button button-dark button-small" href="/downloads/Sparkpad-macOS.zip" download>{t("Baixar para Mac")} <span><SolarIcon variant="bold" name="arrow-right-up" /></span></a><button class="mobile-menu icon-button" aria-label={t("Abrir navegação")} aria-expanded="false" aria-controls="mobile-nav"><SolarIcon variant="bold" name="hamburger-menu" /></button></div>
+</header>
+<nav id="mobile-nav" class="mobile-nav" aria-label={t("Navegação móvel")} hidden><a href="#produto">{t("Produto")}</a><a href="#detalhes">{t("Recursos")}</a><a href="#agentes">{t("Para agentes")}</a><a href="#perguntas">{t("Perguntas")}</a></nav>
+<main id="main">
+<section class="hero" aria-labelledby="hero-title">
+  <div class="sky" aria-hidden="true"><img class="cloud cloud-one" src="/assets/cloud-cumulus.webp" alt=""><img class="cloud cloud-two" src="/assets/cloud-bank.webp" alt=""><img class="cloud cloud-three" src="/assets/cloud-cumulus.webp" alt=""><img class="cloud cloud-four" src="/assets/cloud-bank.webp" alt=""></div>
+  <div class="hero-content">
+    <div class="mode-tabs" role="tablist" aria-label={t("Explore o Sparkpad")}><button id="tab-write" role="tab" aria-selected="true" aria-controls="app-preview" data-mode="write"><SolarIcon variant="bold" name="text-square" />{t("Escrever")}</button><button id="tab-organize" role="tab" aria-selected="false" aria-controls="app-preview" tabindex="-1" data-mode="organize"><SolarIcon variant="bold" name="folder" />{t("Organizar")}</button><button id="tab-connect" role="tab" aria-selected="false" aria-controls="app-preview" tabindex="-1" data-mode="connect"><SolarIcon variant="bold" name="bolt" />{t("Conectar")}</button></div>
+    <h1 id="hero-title">{t("Pense. Escreva.")} <span>{t("Conecte.")}</span></h1>
+    <p class="hero-description">{t("Um lugar leve para suas ideias ganharem forma.")}<br>{t("Notas em blocos, a simplicidade do Markdown e seus agentes de IA.")}<br class="desktop-break"> {t("Tudo em um app nativo. Tudo no seu Mac.")}</p>
+    <div class="hero-actions"><a class="button button-primary" href="/downloads/Sparkpad-macOS.zip" download><SolarIcon variant="bold" name="laptop-minimalistic" />{t("Baixar para macOS")}</a><a class="button button-white" href="#produto">{t("Conheça o Sparkpad")} <span class="round-arrow"><SolarIcon variant="bold" name="arrow-down" /></span></a></div>
+    <p class="hero-note"><SolarIcon variant="bold" name="stars" class="little-spark" /> {t("Open source. Sem conta. Sem assinatura.")}</p>
+    <div class="platform-note">{t("Feito para o Mac")} <span>·</span> {t("Construído com Rust + GPUI")}</div>
+  </div>
+  <ProductDemo locale={locale} />
+</section>
+<section class="intro section-wrap" id="detalhes">
+  <div class="section-eyebrow">{t("MENOS ATRITO. MAIS IDEIAS.")}</div><h2>{t("Seu pensamento não precisa")}<br>{t("de mais uma ferramenta complicada.")}</h2><p class="section-description">{t("Só de um bom lugar para começar. O Sparkpad fica por perto,")}<br class="desktop-break"> {t("organiza o que importa e sai da frente quando você precisa.")}</p>
+  <div class="feature-grid">
+    <article><div class="feature-icon lavender"><SolarIcon name="text-square" /></div><h3>{t("Escreva do seu jeito")}</h3><p>{t("Edite direto no conteúdo. Títulos, listas, tarefas e código continuam formatados enquanto você escreve.")}</p><a href="#produto" data-show-mode="write">{t("Explore o editor")} <span><SolarIcon name="arrow-right-up" /></span></a></article>
+    <article><div class="feature-icon peach"><SolarIcon name="folder" /></div><h3>{t("Uma ideia leva a outra")}</h3><p>{t("Páginas dentro de páginas, grupos na sidebar e uma árvore para organizar tanto uma nota quanto um projeto inteiro.")}</p><a href="#produto" data-show-mode="organize">{t("Organize seu espaço")} <span><SolarIcon name="arrow-right-up" /></span></a></article>
+    <article><div class="feature-icon blue"><SolarIcon name="bolt" /></div><h3>{t("Seus agentes, no mesmo lugar")}</h3><p>{t("Conecte o Claude Code, Codex ou Kimi. Deixe seu agente criar, editar e organizar notas pelo MCP.")}</p><a href="#agentes">{t("Conheça o MCP")} <span><SolarIcon name="arrow-right-up" /></span></a></article>
+  </div>
+</section>
+<section class="detail-section section-wrap">
+  <div class="detail-art"><div class="mini-note"><div class="mini-top"><span class="mini-emoji">🌿</span><span class="mini-tag">{t("SEU RITMO")}</span></div><h3>{t("Espaço para")}<br><i>{t("o que vem a seguir.")}</i></h3><p>{t("Comece com uma ideia. O resto pode esperar.")}</p><div class="mini-task"><span class="checked-box">✓</span> {t("Tirar a ideia da cabeça")}</div><div class="mini-task"><span class="unchecked-box"></span> {t("Encontrar o próximo passo")}</div><div class="mini-task"><span class="unchecked-box"></span> {t("Deixar espaço para criar")}</div><div class="mini-toolbar"><span>{t("Texto")} <img class="icon" src="/assets/icons/nav-arrow-down.svg" alt=""></span><b>B</b><i>I</i><u>U</u><span>⌘</span></div></div><span class="floating-tag"><img class="icon" src="/assets/icons/check.svg" alt="">{t("Tudo salvo no seu Mac")}</span></div>
+  <div class="detail-copy"><span class="section-eyebrow">{t("UM EDITOR QUE ACOMPANHA VOCÊ")}</span><h2>{t("Familiar ao escrever.")}<br>{t("Leve em cada detalhe.")}</h2><p>{t("A liberdade de um editor em blocos, com o cuidado de um app feito para o Mac. Sem mudar de tela para editar. Sem perder o fio da ideia.")}</p><ul class="detail-list"><li><SolarIcon name="check-circle" />{t("Markdown que você vê e edita no mesmo lugar")}</li><li><SolarIcon name="check-circle" />{t("Menu de blocos com")} <kbd>/</kbd> {t("e navegação pelo teclado")}</li><li><SolarIcon name="check-circle" />{t("Código com linguagens, highlight e indentação")}</li><li><SolarIcon name="check-circle" />{t("Capas, ícones e três fontes para chamar de seu")}</li></ul></div>
+</section>
+<section class="agents-section section-wrap" id="agentes"><div class="agents-heading"><div><span class="section-eyebrow">{t("SPARKPAD PARA AGENTES")}</span><h2>{t("Uma segunda mão.")}<br>{t("No seu bloco de notas.")}</h2></div><p>{t("Suas notas já fazem parte do seu trabalho.")}<br>{t("Agora elas também podem fazer parte")}<br>{t("do contexto dos seus agentes.")}</p></div><div class="agent-grid"><AgentConversation locale={locale} /><div class="agent-setup"><div class="setup-top"><SolarIcon name="code-square" /><span>{t("Conecte ao seu fluxo")}</span><button class="copy-setup icon-button" aria-label={t("Copiar configuração MCP")}><SolarIcon name="copy" /></button></div><pre><code><span class="code-comment">{t("// Configuração do cliente MCP")}</span>
+&#123;
+  <span class="code-key">"mcpServers"</span>: &#123;
+    <span class="code-key">"sparkpad"</span>: &#123;
+      <span class="code-key">"command"</span>: <span class="code-string">"/Applications/Sparkpad.app/Contents/MacOS/sparkpad"</span>,
+      <span class="code-key">"args"</span>: [<span class="code-string">"mcp"</span>]
+    &#125;
+  &#125;
+&#125;</code></pre><p>{t("Crie notas, edite Markdown, defina capas e ícones, mova páginas e organize toda a árvore.")}</p><a href="https://github.com/mpires-dev/sparkpad#MCP" target="_blank" rel="noopener noreferrer">{t("Ver instruções de conexão")} <span><SolarIcon name="arrow-right-up" /></span></a></div></div></section>
+<section class="ownership section-wrap"><div class="ownership-heading"><span class="section-eyebrow">{t("SUAS NOTAS. DE VERDADE.")}</span><h2>{t("Um arquivo local.")}<br>{t("Um mundo de possibilidades.")}</h2><p>{t("Seus textos vivem no seu Mac, em SQLite e Markdown.")}<br>{t("Você não precisa criar uma conta para começar a pensar.")}</p></div><div class="ownership-grid"><article><SolarIcon name="ssd-round" /><h3>{t("Local por natureza")}</h3><p>{t("Escreva e organize suas notas sem depender de uma conexão.")}</p></article><article><SolarIcon name="bolt" /><h3>{t("Nativo por escolha")}</h3><p>{t("Rust e GPUI, em um app feito para se sentir em casa no macOS.")}</p></article><article><SolarIcon name="code-circle" /><h3>{t("Aberto por princípio")}</h3><p>{t("Leia o código, contribua ou adapte o Sparkpad ao seu jeito de trabalhar.")}</p></article></div><a class="button button-white" href="https://github.com/mpires-dev/sparkpad" target="_blank" rel="noopener noreferrer"><SolarIcon variant="bold" name="code" />{t("Explore no GitHub")} <span><SolarIcon variant="bold" name="arrow-right-up" /></span></a></section>
+<section class="faq section-wrap" id="perguntas"><div><span class="section-eyebrow">{t("ANTES DE COMEÇAR")}</span><h2>{t("Bom saber.")}</h2><p>{t("Algumas respostas para você")}<br>{t("chegar e começar a escrever.")}</p></div><div class="faq-items"><details><summary>{t("O Sparkpad é gratuito?")}<span><SolarIcon name="add" /></span></summary><p>{t("Sim. O projeto é open source, sob a licença AGPL-3.0. Você pode usar o app, consultar o código e contribuir pelo GitHub.")}</p></details><details><summary>{t("Onde minhas notas ficam salvas?")}<span><SolarIcon name="add" /></span></summary><p>{t("No seu Mac, em um banco SQLite local. O conteúdo das páginas é armazenado como Markdown e salvo automaticamente enquanto você escreve.")}</p></details><details><summary>{t("Posso usar sem conectar uma IA?")}<span><SolarIcon name="add" /></span></summary><p>{t("Claro. O Sparkpad é um bloco de notas completo por si só. O MCP é opcional: conecte um agente apenas quando fizer sentido para o seu fluxo.")}</p></details><details><summary>{t("Quais agentes podem se conectar?")}<span><SolarIcon name="add" /></span></summary><p>{t("Clientes com suporte a MCP por stdio, como Claude Code, Codex e Kimi. O servidor faz parte do próprio executável do Sparkpad.")}</p></details><details><summary>{t("O app está disponível para qual plataforma?")}<span><SolarIcon name="add" /></span></summary><p>{t("A versão disponível nesta prévia é para macOS com Apple Silicon. O projeto usa Rust e GPUI; as instruções para compilar estão no repositório.")}</p></details></div></section>
+<section class="final-cta"><img src="/assets/sparkpad.png" alt="" width="72" height="72"><span class="section-eyebrow">{t("UM BOM LUGAR PARA COMEÇAR")}</span><h2>{t("Sua próxima ideia")}<br>{t("merece um pouco de espaço.")}</h2><p>{t("Abra o Sparkpad. O resto começa com você.")}</p><a class="button button-primary" href="/downloads/Sparkpad-macOS.zip" download>{t("Baixar para macOS")} <SolarIcon name="arrow-down" /></a><span class="cta-note">{t("Apple Silicon · Local · Open source")}</span></section>
+</main>
+<footer class="site-footer"><div><a class="brand" href={localePath(locale)}><img src="/assets/sparkpad.png" alt="" width="30" height="30"><span>Sparkpad</span></a><p>{t("Um lugar leve para pensar.")}</p></div><div class="footer-links"><a href="#produto">{t("Produto")}</a><a href="#agentes">MCP</a><a href="https://github.com/mpires-dev/sparkpad" target="_blank" rel="noopener noreferrer">GitHub <SolarIcon variant="bold" name="arrow-right-up" /></a><a href="https://github.com/mpires-dev/sparkpad/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">{t("Licença")}</a></div><span class="footer-credit">{t("Feito por Matheus Pires")} <span>© 2026 · <a href="https://solar-icons.vercel.app/icons" target="_blank" rel="noopener noreferrer">Solar Icons</a> / <a href="https://www.figma.com/community/file/1166831539721848736" target="_blank" rel="noopener noreferrer">480 Design</a> · <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a></span></span></footer>
+<div class="toast" role="status" aria-live="polite" hidden></div>
+</body></html>
