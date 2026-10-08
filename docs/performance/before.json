@@ -1,0 +1,501 @@
+{
+  "version": 1,
+  "profile": "dev opt-level=3 dependencies=2 debug=0 incremental=0",
+  "window": [
+    1100,
+    760
+  ],
+  "cases": [
+    {
+      "case": "blocks-20",
+      "bytes": 4176,
+      "counts": {
+        "blocks": 20,
+        "inputs": 20,
+        "table_cells": 0,
+        "measured_rows": 20
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 0.473042,
+        "p95_ms": 0.653375,
+        "max_ms": 0.653375,
+        "mean_ms": 0.5020357142857143,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.0047079999999999995,
+        "p95_ms": 0.008,
+        "max_ms": 0.054,
+        "mean_ms": 0.007345142857142857,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 1.02375,
+        "p95_ms": 1.121792,
+        "max_ms": 1.121792,
+        "mean_ms": 1.0250537142857143,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 6.059625,
+        "p95_ms": 6.83525,
+        "max_ms": 6.83525,
+        "mean_ms": 6.111369000000001,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 4.957875,
+        "p95_ms": 6.254916,
+        "max_ms": 7.099125000000001,
+        "mean_ms": 4.986100820000002,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 4.735625000000001,
+        "p95_ms": 5.687917,
+        "max_ms": 6.116125,
+        "mean_ms": 4.82852176,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "edit_cpu_scene": {
+        "samples": 20,
+        "median_ms": 5.120667,
+        "p95_ms": 5.943333,
+        "max_ms": 6.596709,
+        "mean_ms": 5.21147505,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      }
+    },
+    {
+      "case": "blocks-200",
+      "bytes": 43264,
+      "counts": {
+        "blocks": 200,
+        "inputs": 200,
+        "table_cells": 0,
+        "measured_rows": 200
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 4.797709,
+        "p95_ms": 5.520625000000001,
+        "max_ms": 5.520625000000001,
+        "mean_ms": 4.951797857142857,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.010291,
+        "p95_ms": 0.013834,
+        "max_ms": 0.090875,
+        "mean_ms": 0.01442252380952381,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 13.551,
+        "p95_ms": 17.346125,
+        "max_ms": 17.346125,
+        "mean_ms": 13.608904571428573,
+        "over_16_67_ms": 1,
+        "over_33_33_ms": 0
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 62.789750000000005,
+        "p95_ms": 67.05775,
+        "max_ms": 67.05775,
+        "mean_ms": 63.70870214285714,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 39.661334,
+        "p95_ms": 42.502167,
+        "max_ms": 53.693042000000005,
+        "mean_ms": 40.04175670000002,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 39.618,
+        "p95_ms": 41.633083,
+        "max_ms": 42.042667,
+        "mean_ms": 39.85857166000001,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "edit_cpu_scene": {
+        "samples": 20,
+        "median_ms": 41.658874999999995,
+        "p95_ms": 43.628083,
+        "max_ms": 43.744959,
+        "mean_ms": 41.5506978,
+        "over_16_67_ms": 20,
+        "over_33_33_ms": 20
+      }
+    },
+    {
+      "case": "blocks-2000",
+      "bytes": 435944,
+      "counts": {
+        "blocks": 2000,
+        "inputs": 2000,
+        "table_cells": 0,
+        "measured_rows": 2000
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 55.51375,
+        "p95_ms": 59.568250000000006,
+        "max_ms": 59.568250000000006,
+        "mean_ms": 56.186345285714296,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.068917,
+        "p95_ms": 0.08779200000000001,
+        "max_ms": 0.47437500000000005,
+        "mean_ms": 0.08880766666666669,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 619.354666,
+        "p95_ms": 959.663042,
+        "max_ms": 959.663042,
+        "mean_ms": 623.2592737142858,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 1245.2137910000001,
+        "p95_ms": 1626.869042,
+        "max_ms": 1626.869042,
+        "mean_ms": 1245.8345535714286,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 428.12820800000003,
+        "p95_ms": 450.464417,
+        "max_ms": 719.166167,
+        "mean_ms": 435.66356589999987,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 428.832916,
+        "p95_ms": 439.984625,
+        "max_ms": 444.780625,
+        "mean_ms": 429.36401917999996,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "edit_cpu_scene": {
+        "samples": 20,
+        "median_ms": 506.950125,
+        "p95_ms": 520.970625,
+        "max_ms": 527.223917,
+        "mean_ms": 509.09293964999995,
+        "over_16_67_ms": 20,
+        "over_33_33_ms": 20
+      }
+    },
+    {
+      "case": "blocks-8000",
+      "bytes": 1747544,
+      "counts": {
+        "blocks": 8000,
+        "inputs": 8000,
+        "table_cells": 0,
+        "measured_rows": 8000
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 302.618583,
+        "p95_ms": 348.895083,
+        "max_ms": 348.895083,
+        "mean_ms": 309.48695228571427,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.294541,
+        "p95_ms": 0.415208,
+        "max_ms": 7.145875,
+        "mean_ms": 0.624783619047619,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 11567.403457999999,
+        "p95_ms": 17563.251333,
+        "max_ms": 17563.251333,
+        "mean_ms": 11633.293577,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 16127.745458,
+        "p95_ms": 23038.536125,
+        "max_ms": 23038.536125,
+        "mean_ms": 16220.239583285713,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 2134.604292,
+        "p95_ms": 2734.91275,
+        "max_ms": 5521.361334,
+        "mean_ms": 2256.1151909200003,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 2154.1314589999997,
+        "p95_ms": 2537.1828330000003,
+        "max_ms": 2655.559875,
+        "mean_ms": 2136.4645434,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "edit_cpu_scene": {
+        "samples": 20,
+        "median_ms": 4285.282125,
+        "p95_ms": 5178.377708,
+        "max_ms": 5188.2105,
+        "mean_ms": 4410.0615686,
+        "over_16_67_ms": 20,
+        "over_33_33_ms": 20
+      }
+    },
+    {
+      "case": "table-400-rows",
+      "bytes": 12228,
+      "counts": {
+        "blocks": 1,
+        "inputs": 1,
+        "table_cells": 1203,
+        "measured_rows": 1
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 10.379125,
+        "p95_ms": 12.592374999999999,
+        "max_ms": 12.592374999999999,
+        "mean_ms": 10.750196285714285,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.007500000000000001,
+        "p95_ms": 0.02875,
+        "max_ms": 0.589417,
+        "mean_ms": 0.036476190476190475,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 3026.351166,
+        "p95_ms": 3274.93625,
+        "max_ms": 3274.93625,
+        "mean_ms": 3008.077910571428,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 3710.678958,
+        "p95_ms": 3975.757291,
+        "max_ms": 3975.757291,
+        "mean_ms": 3638.3336009999994,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 120.1395,
+        "p95_ms": 125.13491700000002,
+        "max_ms": 585.066541,
+        "mean_ms": 129.60267829999998,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 120.929583,
+        "p95_ms": 129.01137500000002,
+        "max_ms": 149.13095800000002,
+        "mean_ms": 122.29609843999998,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "edit_cpu_scene": null
+    },
+    {
+      "case": "code-5000-lines",
+      "bytes": 252790,
+      "counts": {
+        "blocks": 1,
+        "inputs": 1,
+        "table_cells": 0,
+        "measured_rows": 4
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 10.220833,
+        "p95_ms": 11.779583,
+        "max_ms": 11.779583,
+        "mean_ms": 10.416363285714285,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.051167,
+        "p95_ms": 0.073833,
+        "max_ms": 3.484334,
+        "mean_ms": 0.21716076190476188,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 33181.353875,
+        "p95_ms": 61793.342832999995,
+        "max_ms": 61793.342832999995,
+        "mean_ms": 40641.32627385714,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 34719.024625000005,
+        "p95_ms": 63952.399708000004,
+        "max_ms": 63952.399708000004,
+        "mean_ms": 42275.24220814287,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 450.030917,
+        "p95_ms": 827.799916,
+        "max_ms": 855.367584,
+        "mean_ms": 528.4601541799999,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 739.1779160000001,
+        "p95_ms": 856.03375,
+        "max_ms": 901.3930829999999,
+        "mean_ms": 744.4399942200001,
+        "over_16_67_ms": 50,
+        "over_33_33_ms": 50
+      },
+      "edit_cpu_scene": null
+    },
+    {
+      "case": "paragraph-512kb",
+      "bytes": 530000,
+      "counts": {
+        "blocks": 1,
+        "inputs": 1,
+        "table_cells": 0,
+        "measured_rows": 1
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 44.490500000000004,
+        "p95_ms": 45.655959,
+        "max_ms": 45.655959,
+        "mean_ms": 44.56224414285714,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.135334,
+        "p95_ms": 0.213792,
+        "max_ms": 5.656375,
+        "mean_ms": 0.40159352380952384,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 49.780541,
+        "p95_ms": 52.08775,
+        "max_ms": 52.08775,
+        "mean_ms": 49.64794628571428,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 81.610666,
+        "p95_ms": 86.799083,
+        "max_ms": 86.799083,
+        "mean_ms": 81.11291642857144,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 17.680041,
+        "p95_ms": 21.363,
+        "max_ms": 22.755333,
+        "mean_ms": 17.90155326,
+        "over_16_67_ms": 43,
+        "over_33_33_ms": 0
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 16.98875,
+        "p95_ms": 19.414125000000002,
+        "max_ms": 21.743833000000002,
+        "mean_ms": 17.20874588,
+        "over_16_67_ms": 35,
+        "over_33_33_ms": 0
+      },
+      "edit_cpu_scene": null
+    }
+  ],
+  "display_link": null,
+  "harness_error": "The initial display-link harness called request_animation_frame outside a render callback. CPU measurements completed; display-link metrics unavailable for this run.",
+  "max_rss_bytes": 2285142016,
+  "peak_footprint_bytes": 3688687424
+}

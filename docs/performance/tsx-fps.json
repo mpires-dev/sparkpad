@@ -1,0 +1,95 @@
+{
+  "version": 2,
+  "window": [
+    1100,
+    760
+  ],
+  "profile": "dev opt-level=3 dependencies=2 debug=0 incremental=0",
+  "initialization_to_scene_ms": 119.335125,
+  "process_code_start_to_scene_ms": 248.076333,
+  "cases": [
+    {
+      "case": "code-5000-lines",
+      "bytes": 252790,
+      "counts": {
+        "blocks": 1,
+        "inputs": 1,
+        "table_cells": 0,
+        "measured_rows": 4
+      },
+      "parse": {
+        "samples": 7,
+        "median_ms": 9.967792,
+        "p95_ms": 11.049875,
+        "max_ms": 11.049875,
+        "mean_ms": 10.143577714285714,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "sqlite_read": {
+        "samples": 21,
+        "median_ms": 0.029583,
+        "p95_ms": 0.05450000000000001,
+        "max_ms": 0.114958,
+        "mean_ms": 0.03713085714285715,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "load": {
+        "samples": 7,
+        "median_ms": 15.698459,
+        "p95_ms": 16.316584,
+        "max_ms": 16.316584,
+        "mean_ms": 15.77829157142857,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "transition_to_scene": {
+        "samples": 7,
+        "median_ms": 76.036125,
+        "p95_ms": 82.314,
+        "max_ms": 82.314,
+        "mean_ms": 77.01607142857142,
+        "over_16_67_ms": 7,
+        "over_33_33_ms": 7
+      },
+      "scroll_cpu_scene": {
+        "samples": 50,
+        "median_ms": 2.699125,
+        "p95_ms": 3.3105,
+        "max_ms": 3.8515,
+        "mean_ms": 2.7623091400000006,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "hover_cpu_scene": {
+        "samples": 50,
+        "median_ms": 1.235292,
+        "p95_ms": 1.902167,
+        "max_ms": 2.189875,
+        "mean_ms": 1.3246133400000002,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      },
+      "edit_cpu_scene": {
+        "samples": 20,
+        "median_ms": 10.919,
+        "p95_ms": 11.582291,
+        "max_ms": 11.655833,
+        "mean_ms": 10.98572505,
+        "over_16_67_ms": 0,
+        "over_33_33_ms": 0
+      }
+    }
+  ],
+  "native_window": {
+    "visible": true,
+    "occlusion_state": 8192
+  },
+  "cadence_error": "Display-link run did not finish within 60 seconds; check desktop visibility and occlusion. CPU scene samples remain valid.",
+  "presentation_validation": {
+    "status": "blocked_by_locked_desktop",
+    "evidence": "IOConsoleUsers.CGSSessionScreenIsLocked = Yes; NSWindow occlusionState = 8192, without the Visible bit (2).",
+    "note": "No displayed FPS is claimed. The CPU scene timings remain valid; rerun with an unlocked visible macOS desktop."
+  }
+}

@@ -218,3 +218,9 @@ Thanks to [GPUI](https://www.gpui.rs/), the Fennel Motion empire-ui components, 
   <strong>One local file. A world of possibilities.</strong><br />
   <sub>Made by <a href="https://github.com/mpires-dev">Matheus Pires</a> · If Sparkpad helps you think, consider giving it a star.</sub>
 </p>
+
+### Optional self-hosted sync
+
+Keep your notes fully local, or connect to your own server for background synchronization and simultaneous editing across Macs and browsers. Every Mac keeps a local SQLite copy; the server reconciles changes using Yrs/Yjs over WebSockets.
+
+See the [sync and self-hosting guide](docs/sync.md) for onboarding, deployment, backups, installer builds, and the first version’s collaboration limits.
