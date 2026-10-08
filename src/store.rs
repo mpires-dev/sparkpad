@@ -31,8 +31,9 @@ pub struct NoteSummary {
 pub struct SidebarGroup { pub id: String, pub title: String }
 
 pub struct Store {
-    conn: Connection,
-    mcp_sessions_dir: PathBuf,
+    pub(crate) conn: Connection,
+    pub(crate) path: PathBuf,
+    pub(crate) mcp_sessions_dir: PathBuf,
 }
 
 pub fn default_path() -> Result<PathBuf> {
@@ -96,7 +97,9 @@ impl Store {
         let mut directory_name = path.file_name().unwrap_or_default().to_os_string();
         directory_name.push(".mcp-sessions");
         let mcp_sessions_dir = path.with_file_name(directory_name);
-        Ok(Self { conn, mcp_sessions_dir })
+        let store = Self { conn, path: path.to_owned(), mcp_sessions_dir };
+        crate::sync_storage::initialize(&store)?;
+        Ok(store)
     }
     pub fn mcp_sessions_dir(&self) -> &Path {
         &self.mcp_sessions_dir
@@ -293,6 +296,9 @@ impl Store {
         Self::validate(title, markdown)?;
         let changed = self.conn.execute("UPDATE notes SET title=?2,markdown=?3,revision=revision+1,updated_at=unixepoch() WHERE id=?1 AND revision=?4", params![id,title,markdown,expected_revision])?;
         if changed == 0 {
+            if crate::sync_storage::enabled(self) && self.get(id).is_ok() {
+                return crate::sync_storage::merge_save(self,id,title,markdown,expected_revision);
+            }
             bail!("Note changed externally or was deleted. Read it again before updating (revision conflict).")
         }
         self.get(id)

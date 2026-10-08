@@ -33,7 +33,9 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
-        if path == BLOCK_GRIP {
+        if path == "sparkpad/app-icon.png" {
+            Ok(Some(Cow::Borrowed(include_bytes!("../assets/app/icon.png"))))
+        } else if path == BLOCK_GRIP {
             Ok(Some(Cow::Borrowed(include_bytes!(
                 "../assets/icons/grip-vertical.svg"
             ))))

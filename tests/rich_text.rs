@@ -12,6 +12,10 @@ mod block_editor;
 #[cfg(target_os = "macos")]
 #[path = "../src/blocks.rs"]
 mod blocks;
+#[path="../src/document_images.rs"]
+mod document_images;
+#[path="../src/markdown_table.rs"]
+mod markdown_table;
 #[path = "../src/rich_clipboard.rs"]
 mod rich_clipboard;
 #[path = "../src/code_highlight.rs"]
@@ -25,6 +29,12 @@ mod macos;
 #[cfg(target_os = "macos")]
 #[path = "../src/store.rs"]
 mod store;
+#[path = "../src/sync_storage.rs"]
+mod sync_storage;
+#[path = "../src/sync_client.rs"]
+mod sync_client;
+#[path = "../src/sync_settings.rs"]
+mod sync_settings;
 #[cfg(target_os = "macos")]
 #[path = "../src/note_tree.rs"]
 mod note_tree;
@@ -45,6 +55,7 @@ mod preferences;
 mod ui;
 #[cfg(target_os = "macos")]
 fn main() {
+    if let Ok(output)=std::env::var("SPARKPAD_PERF_OUTPUT"){performance::run(output);return;}
     use gpui::{font, px, rgb, Application, FontStyle, FontWeight, TextRun, WindowTextSystem};
     let app = Application::new().with_assets(assets::Assets);
     assets::register_fonts(&app.text_system());
@@ -176,3 +187,5 @@ fn main() {}
 
 #[path="../src/sidebar_drag.rs"]
 mod sidebar_drag;
+#[path="../src/performance.rs"]
+mod performance;

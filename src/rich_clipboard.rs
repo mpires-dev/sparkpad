@@ -43,6 +43,8 @@ pub fn to_html(blocks: &[Block]) -> String {
             Kind::Task(checked) => html.push_str(&format!("<li data-checked=\"{checked}\"><input type=\"checkbox\" disabled{}>{text}</li>", if *checked { " checked" } else { "" })),
             Kind::Quote => html.push_str(&format!("<blockquote>{text}</blockquote>")),
             Kind::Code(language) => html.push_str(&format!("<pre><code class=\"language-{}\">{}</code></pre>", escape(language), escape(&block.text))),
+            Kind::Image{url,title} => if safe_link(url)||crate::document_images::name(url).is_some(){html.push_str(&format!("<figure><img src=\"{}\" alt=\"{}\" title=\"{}\" width=\"{}%\"></figure>",escape(url),escape(&block.text),escape(title.as_deref().unwrap_or("")),crate::blocks::image_width(title.as_deref())));},
+            Kind::Table|Kind::Source => html.push_str(&markdown::to_html_with_options(&block.markdown(),&markdown::Options::gfm()).unwrap_or_else(|_|format!("<pre>{}</pre>",escape(&block.text)))),
             Kind::Divider => html.push_str("<hr>"),
             _ => html.push_str(&format!("<p>{}</p>", if text.is_empty() { "<br>" } else { &text })),
         }
@@ -84,9 +86,28 @@ impl Builder {
             return;
         };
         let tag = name.local.as_ref();
-        if matches!(tag, "script" | "style" | "head" | "iframe" | "object" | "svg" | "img") { return; }
+        if matches!(tag, "script" | "style" | "head" | "iframe" | "object" | "svg") { return; }
         let attributes = attrs.borrow();
         let attr = |key: &str| attributes.iter().find(|a| a.name.local.as_ref() == key).map(|a| a.value.to_string());
+        if tag=="img" {
+            if let Some(url)=attr("src").filter(|url|safe_link(url)||crate::document_images::name(url).is_some()){
+                self.flush(false);self.blocks.push(Block::new(Kind::Image{url,title:attr("title")},attr("alt").unwrap_or_default()));
+            }return;
+        }
+        if tag=="table" {
+            self.flush(false);
+            fn rows(node:&Handle,result:&mut Vec<Vec<String>>,depth:usize){
+                if depth>128{return;}
+                if let NodeData::Element{name,..}=&node.data {if name.local.as_ref()=="tr"{
+                    let mut cells=Vec::new();for cell in node.children.borrow().iter(){if let NodeData::Element{name,..}=&cell.data {if matches!(name.local.as_ref(),"td"|"th"){
+                        let mut builder=Builder{blocks:Vec::new(),current:None,lists:Vec::new()};for child in cell.children.borrow().iter(){builder.visit(child,&Marks::default(),false,0);}builder.flush(false);
+                        cells.push(builder.blocks.iter().map(Block::markdown).collect::<Vec<_>>().join(" ").replace('\n'," ").replace("\\|","|").replace('|',"\\|"));
+                    }}}result.push(cells);return;
+                }}
+                for child in node.children.borrow().iter(){rows(child,result,depth+1);}
+            }
+            let mut data=Vec::new();rows(node,&mut data,0);if !data.is_empty(){let columns=data.iter().map(Vec::len).max().unwrap_or(0);let mut lines=Vec::new();for(index,row)in data.iter_mut().enumerate(){row.resize(columns,String::new());lines.push(format!("| {} |",row.join(" | ")));if index==0{lines.push(format!("| {} |",vec!["---";columns].join(" | ")));}}self.blocks.push(Block::new(Kind::Table,lines.join("\n")));}return;
+        }
         if tag == "br" {
             let block = self.current.get_or_insert_with(|| Block::new(Kind::Paragraph, String::new()));
             if !block.text.is_empty() { block.append_marked("\n", inherited); } return;
@@ -189,5 +210,16 @@ mod tests {
         assert!(html.contains("<strong>ação</strong>")); assert!(!html.contains("before"));
         let unsafe_html = from_html("<p><a href='javascript:alert(1)'>safe text</a><u>underlined</u></p>");
         assert!(unsafe_html[0].spans.iter().all(|span| span.marks.link.is_none()));
+    }
+}
+
+#[cfg(test)]mod media_tests{
+    use super::*;
+    #[test]fn tables_and_images_keep_content_on_html_clipboard(){
+        let md="![Alt](https://example.com/photo.png \"sparkpad-width=50\")\n\n| Name | Value |\n| --- | --- |\n| **Bold** | a\\|b |";
+        let doc=crate::blocks::Document::parse(md);let html=to_html(&doc.blocks);assert!(html.contains("<img"));assert!(html.contains("<table>"));
+        let imported=from_html(&html);assert!(imported.iter().any(|b|matches!(&b.kind,Kind::Image{url,..}if url=="https://example.com/photo.png")));
+        let table=imported.iter().find(|b|b.kind==Kind::Table).unwrap();assert!(table.text.contains("**Bold**"));assert!(table.text.contains("a\\|b"));
+        assert!(!from_html("<img src=\"file:///private/secret.png\"><script>bad()</script>").iter().any(|b|matches!(b.kind,Kind::Image{..})));
     }
 }

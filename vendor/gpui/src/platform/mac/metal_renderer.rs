@@ -100,6 +100,7 @@ pub(crate) struct MetalRenderer {
     device: metal::Device,
     layer: metal::MetalLayer,
     presents_with_transaction: bool,
+    frame_trace:Option<Arc<Mutex<std::fs::File>>>,
     command_queue: CommandQueue,
     paths_rasterization_pipeline_state: metal::RenderPipelineState,
     path_sprites_pipeline_state: metal::RenderPipelineState,
@@ -258,6 +259,7 @@ impl MetalRenderer {
             device,
             layer,
             presents_with_transaction: false,
+            frame_trace:std::env::var_os("SPARKPAD_FRAME_TRACE").and_then(|path|std::fs::OpenOptions::new().create(true).append(true).open(path).ok()).map(|file|Arc::new(Mutex::new(file))),
             command_queue,
             paths_rasterization_pipeline_state,
             path_sprites_pipeline_state,
@@ -384,6 +386,16 @@ impl MetalRenderer {
                     });
                     let block = block.copy();
                     command_buffer.add_completed_handler(&block);
+                    // Opt-in performance capture uses the drawable's actual display
+                    // timestamp, rather than GPU completion or CPU submission time.
+                    if let Some(trace)=self.frame_trace.clone(){
+                        let presented=ConcreteBlock::new(move|drawable:&metal::DrawableRef|{
+                            use std::io::Write;
+                            let timestamp=drawable.presented_time();
+                            if timestamp>0. {let _=writeln!(&mut *trace.lock(),"{{\"presented_time_s\":{timestamp:.9}}}");}
+                        }).copy();
+                        drawable.add_presented_handler(&presented);
+                    }
 
                     if self.presents_with_transaction {
                         command_buffer.commit();

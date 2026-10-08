@@ -2,7 +2,7 @@ use crate::app_theme::neutral;
 use crate::blocks::{Block, Document, Kind};
 use empire_ui::{
     menu::{Menu, MenuAlign, MenuEvent, MenuItem},
-    Button, ButtonSize, ButtonVariant, Tooltip,
+    Button, ButtonSize, ButtonVariant, Checkbox, CheckboxEvent, Tooltip,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -11,7 +11,7 @@ use gpui_component::{
     ActiveTheme,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell,RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
 };
@@ -107,13 +107,30 @@ impl Render for BlockDrag {
 struct BlockInput {
     state: Entity<InputState>,
     _subscription: Subscription,
-    highlight: crate::code_highlight::CodeHighlight,
+    highlight:Rc<RefCell<crate::code_highlight::CodeHighlight>>,
+    highlight_language:Option<String>,
     language_menu: Option<Entity<Menu>>,
     _language_subscription: Option<Subscription>,
+    checkbox: Option<Entity<Checkbox>>,
+    _checkbox_subscription: Option<Subscription>,
 }
+struct CellInput {state:Entity<InputState>,_subscription:Subscription}
+struct TableInputs {row_heights:Rc<RefCell<HashMap<usize,f32>>>,source:String,model:crate::markdown_table::MarkdownTable,cells:HashMap<(usize,usize),CellInput>}
+#[derive(Clone,Copy)]
+enum TableChange {AddRow,AddColumn,RemoveRow(usize),RemoveColumn(usize)}
 pub struct BlockEditor {
     document: Document,
+    shared: Option<sparkpad_sync::CollaborativeText>,
+    asset_directory: Option<std::path::PathBuf>,
+    resizing_image: Option<String>,
+    media_error: Option<String>,
+    cached_markdown:SharedString,
+    row_heights:Rc<RefCell<HashMap<String,f32>>>,
+    estimated_heights:HashMap<String,f32>,
+    layout_origin:Rc<Cell<Option<Point<Pixels>>>>,
+    layout_width:Rc<Cell<f32>>,
     inputs: HashMap<String, BlockInput>,
+    tables:HashMap<String,TableInputs>,
     active: Option<String>,
     selected_block: Option<String>,
     text_selection: Option<TextSelection>,
@@ -212,7 +229,11 @@ impl BlockEditor {
         });
         let mut editor = Self {
             document: Document::parse(""),
+            cached_markdown:"".into(),row_heights:Default::default(),estimated_heights:Default::default(),layout_origin:Default::default(),layout_width:Rc::new(Cell::new(480.)),
+            shared: None,
+            asset_directory:None,resizing_image:None,media_error:None,
             inputs: HashMap::new(),
+            tables:HashMap::new(),
             active: None,
             selected_block: None,
             text_selection: None,
@@ -242,7 +263,95 @@ impl BlockEditor {
         editor
     }
     pub fn value(&self) -> SharedString {
-        self.document.markdown().into()
+        self.cached_markdown.clone()
+    }
+    pub fn set_asset_directory(&mut self,path:std::path::PathBuf){self.asset_directory=Some(path);}
+    fn choose_image(&mut self,id:String,window:&mut Window,cx:&mut Context<Self>){
+        let Some(root)=self.asset_directory.clone() else {self.media_error=Some("O armazenamento de imagens não está disponível.".into());cx.notify();return;};
+        let prompt=cx.prompt_for_paths(PathPromptOptions{files:true,directories:false,multiple:false,prompt:Some("Inserir imagem".into())});
+        cx.spawn_in(window,async move |this,cx|{
+            if let Ok(Ok(Some(paths)))=prompt.await {if let Some(path)=paths.first(){
+                let path=path.clone();let result=cx.background_executor().spawn(async move {crate::document_images::import(&root,&path)}).await;
+                let _=this.update_in(cx,|this,w,cx|{
+                    match result {Ok(url)=>if let Some(index)=this.document.blocks.iter().position(|b|b.id==id){
+                        this.checkpoint(cx);this.document.blocks[index].kind=Kind::Image{url,title:None};this.document.blocks[index].invalidate();this.media_error=None;this.changed(w,cx);
+                    },Err(error)=>{this.media_error=Some(error.to_string());cx.notify();}}
+                });
+            }}
+        }).detach();
+    }
+    fn set_image_width(&mut self,id:&str,width:u16,window:&mut Window,cx:&mut Context<Self>){
+        let Some(index)=self.document.blocks.iter().position(|b|b.id==id) else{return;};self.checkpoint(cx);
+        if let Kind::Image{title,..}=&mut self.document.blocks[index].kind {*title=crate::blocks::resized_image_title(title.as_deref(),width);self.document.blocks[index].invalidate();self.changed(window,cx);}
+    }
+    fn resize_image(&mut self,event:&MouseMoveEvent,window:&mut Window,cx:&mut Context<Self>)->bool {
+        let Some(id)=self.resizing_image.clone() else{return false;};
+        let Some(bounds)=self.row_bounds.borrow().get(&id).copied() else{return false;};
+        let available=(f32::from(bounds.size.width)-74.).max(100.);
+        let width=(((f32::from(event.position.x-bounds.origin.x)-58.)/available)*100.).round().clamp(10.,100.) as u16;
+        if let Some(index)=self.document.blocks.iter().position(|b|b.id==id){
+            if let Kind::Image{title,..}=&mut self.document.blocks[index].kind {
+                if crate::blocks::image_width(title.as_deref())!=width {*title=crate::blocks::resized_image_title(title.as_deref(),width);self.document.blocks[index].invalidate();self.changed(window,cx);}
+            }
+        }
+        cx.stop_propagation();true
+    }
+    pub fn has_shared_document(&self)->bool {self.shared.is_some()}
+    pub fn bind_shared_document(&mut self,state:&[u8])->anyhow::Result<()> {
+        let actor=u64::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap()) & ((1u64<<53)-1);
+        let mut shared=sparkpad_sync::CollaborativeText::load(actor,state)?;
+        // Keep any keystrokes entered while the initial sync was being prepared.
+        shared.edit(&self.cached_markdown);
+        self.shared=Some(shared);self.undo.clear();self.redo.clear();Ok(())
+    }
+    pub fn shared_update(&mut self,title:&str,vector:&[u8])->anyhow::Result<Option<Vec<u8>>> {
+        let Some(shared)=&mut self.shared else {return Ok(None)};
+        shared.document.set_local_text("title",title);
+        Ok(Some(shared.document.delta(vector)?))
+    }
+    pub fn apply_shared_state(&mut self,state:&[u8],window:&mut Window,cx:&mut Context<Self>)->anyhow::Result<()> {
+        if self.shared.is_none() {self.bind_shared_document(state)?;}
+        let shared=self.shared.as_mut().unwrap();shared.document.apply(state)?;
+        let value=shared.document.text("body");
+        self.reconcile_value(&value,window,cx);Ok(())
+    }
+    fn reconcile_value(&mut self,value:&str,window:&mut Window,cx:&mut Context<Self>) {
+        if self.cached_markdown.as_ref()==value {return;}
+        let old=self.document.clone();let mut next=Document::parse(value);
+        let mut used=HashSet::new();let mut matches=vec![None;next.blocks.len()];
+        // Reuse native inputs for unchanged and moved blocks before matching edited blocks.
+        for (i,block) in next.blocks.iter().enumerate() {
+            if let Some(j)=old.blocks.iter().enumerate().find_map(|(j,b)|(!used.contains(&j) && b.kind==block.kind && b.text==block.text).then_some(j)) {matches[i]=Some(j);used.insert(j);}
+        }
+        for (i,block) in next.blocks.iter().enumerate() {
+            if matches[i].is_some() {continue;}
+            let candidate=old.blocks.iter().enumerate().filter(|(j,b)|!used.contains(j) && std::mem::discriminant(&b.kind)==std::mem::discriminant(&block.kind))
+                .min_by_key(|(j,_)|j.abs_diff(i)).map(|(j,_)|j);
+            if let Some(j)=candidate {matches[i]=Some(j);used.insert(j);}
+        }
+        let mut selections=Vec::new();
+        for (i,source) in matches.iter().enumerate() {
+            if let Some(j)=source {
+                let previous=&old.blocks[*j];next.blocks[i].id=previous.id.clone();
+                if let Some(input)=self.inputs.get(&previous.id) {
+                    let range=input.state.read(cx).selection_range();
+                    let a=sparkpad_sync::transform_cursor(&previous.text,&next.blocks[i].text,range.start);
+                    let b=sparkpad_sync::transform_cursor(&previous.text,&next.blocks[i].text,range.end);
+                    selections.push((previous.id.clone(),a.min(b)..a.max(b)));
+                }
+            }
+        }
+        let selection=self.text_selection.and_then(|selection| {
+            let map=|p:(usize,usize)| {matches.iter().position(|j|*j==Some(p.0)).map(|i|(i,sparkpad_sync::transform_cursor(&old.blocks[p.0].text,&next.blocks[i].text,p.1)))};
+            Some(TextSelection {anchor:map(selection.anchor)?,head:map(selection.head)?})
+        });
+        self.document=next;self.cached_markdown=value.to_owned().into();self.mouse_anchor=None;self.mouse_unit=None;
+        if self.active.as_ref().is_some_and(|id|!self.document.blocks.iter().any(|b|&b.id==id)) {self.active=None;}
+        if self.selected_block.as_ref().is_some_and(|id|!self.document.blocks.iter().any(|b|&b.id==id)) {self.selected_block=None;}
+        self.sync_inputs(window,cx);
+        for (id,range) in selections {if let Some(input)=self.inputs.get(&id) {input.state.update(cx,|s,cx|s.set_byte_selection(range,cx));}}
+        if let Some(selection)=selection {self.apply_text_selection(selection,cx);} else {self.text_selection=None;}
+        cx.notify();
     }
     pub fn set_scroll_handle(&mut self, scroll: ScrollHandle) {
         self.document_scroll = Some(scroll);
@@ -254,7 +363,9 @@ impl BlockEditor {
     }
     pub fn set_value(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_text_selections(None, cx);
+        self.shared = None;
         self.document = Document::parse(&value);
+        self.cached_markdown=value.into();self.row_heights.borrow_mut().clear();self.estimated_heights.clear();self.hover_motion.clear();
         self.hovered_code = None;
         self.row_bounds.borrow_mut().clear();
         self.type_menu
@@ -272,7 +383,8 @@ impl BlockEditor {
     pub fn content_font_family(&self) -> &str { self.font_family.as_ref() }
     pub fn set_font_family(&mut self, family: &str, cx: &mut Context<Self>) {
         if self.font_family.as_ref()!=family {
-            self.font_family=family.to_owned().into();
+            self.font_family=family.to_owned().into();self.row_heights.borrow_mut().clear();self.estimated_heights.clear();
+            for table in self.tables.values(){table.row_heights.borrow_mut().clear();}
             cx.notify();
         }
     }
@@ -284,7 +396,8 @@ impl BlockEditor {
     }
     pub fn set_font_size(&mut self, size: f32, cx: &mut Context<Self>) {
         if self.font_size != size {
-            self.font_size = size;
+            self.font_size = size;self.row_heights.borrow_mut().clear();self.estimated_heights.clear();
+            for table in self.tables.values(){table.row_heights.borrow_mut().clear();}
             cx.notify();
         }
     }
@@ -324,6 +437,7 @@ impl BlockEditor {
         }
     }
     fn checkpoint(&mut self, cx: &App) {
+        if let Some(shared)=&mut self.shared {shared.boundary();return;}
         self.undo.push(self.snapshot(cx));
         if self.undo.len() > 100 {
             self.undo.remove(0);
@@ -331,6 +445,8 @@ impl BlockEditor {
         self.redo.clear();
     }
     fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cached_markdown=self.document.markdown().into();
+        if let Some(shared)=&mut self.shared {shared.edit(&self.cached_markdown);}
         self.sync_inputs(window, cx);
         cx.emit(EditorEvent::Change);
         cx.notify();
@@ -340,7 +456,7 @@ impl BlockEditor {
         for block in &self.document.blocks {
             if let Some(input)=self.inputs.get_mut(&block.id) {
                 let styles = match &block.kind {
-                    Kind::Code(lang) => input.highlight.styles(lang, &block.text, cx.theme().highlight_theme.clone()),
+                    Kind::Code(_) => Vec::new(),
                     _ => inline_styles(block),
                 };
                 input.state.update(cx, |state,cx| {
@@ -349,15 +465,43 @@ impl BlockEditor {
                 });
             }
         }
+        for table in self.tables.values_mut(){for (r,row) in table.model.rows.iter().enumerate(){for (c,block) in row.iter().enumerate(){if let Some(cell)=table.cells.get(&(r,c)){cell.state.update(cx,|s,cx|{s.set_inline_highlights(inline_styles(block),cx);s.set_inline_font_ranges(inline_fonts(block),cx);});}}}}
         cx.notify();
     }
+    // Keep native fields for the viewport and the active/selection endpoints only.
+    // The document model remains complete; virtualization never truncates Markdown.
+    fn virtual_rows(&mut self,window:&Window)->Vec<(bool,f32,f32)> {
+        let scroll=self.document_scroll.as_ref().map(|s|s.offset().y).unwrap_or(px(0.));
+        let bounds=self.document_scroll.as_ref().map(|s|s.bounds()).filter(|b|b.size.height>px(0.));
+        let viewport=bounds.unwrap_or(Bounds::new(point(px(0.),px(0.)),window.viewport_size()));
+        let origin=self.layout_origin.get().map(|p|p.y+scroll).unwrap_or(viewport.top()+px(150.));
+        let width=self.layout_width.get().max(120.);
+        let start=f32::from(viewport.top())-500.;let end=f32::from(viewport.bottom())+500.;
+        let virtualize=self.document.blocks.len()>80;
+        let heights=self.row_heights.borrow();let mut top=f32::from(origin);let mut rows=Vec::with_capacity(self.document.blocks.len());
+        for (i,block) in self.document.blocks.iter().enumerate(){
+            let height=heights.get(&block.id).copied().unwrap_or_else(||{
+                let estimate=self.estimated_heights.entry(block.id.clone()).or_insert_with(||{
+                    let size=self.font_size+if matches!(block.kind,Kind::Heading(1)){8.}else if matches!(block.kind,Kind::Heading(_)){3.}else{0.};
+                    let chars=((width-74.)/(size*0.53)).max(8.) as usize;
+                    let lines=block.text.lines().map(|line|(line.chars().count().max(1)+chars-1)/chars).sum::<usize>().max(1);
+                    match &block.kind{Kind::Divider=>26.,Kind::Image{..}=>320.,Kind::Table=>block.text.lines().count().saturating_sub(2)as f32*48.+118.,Kind::Code(_)=>lines.min(5000)as f32*(self.font_size-3.)*1.6+60.,_=>lines.min(5000)as f32*size*1.6+8.}
+                });*estimate
+            });
+            let pinned=self.active.as_ref()==Some(&block.id)||self.selected_block.as_ref()==Some(&block.id)||self.text_selection.is_some_and(|s|s.anchor.0==i||s.head.0==i);
+            rows.push((!virtualize||pinned||(top+height>=start&&top<=end),height,top));top+=height+8.;
+        }
+        rows
+    }
     fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted=self.virtual_rows(window);
         let ids: HashSet<_> = self.document.blocks.iter().map(|b| b.id.clone()).collect();
         self.inputs.retain(|id, _| ids.contains(id));
         self.row_bounds
             .borrow_mut()
             .retain(|id, _| ids.contains(id));
         for (index, block) in self.document.blocks.iter().enumerate() {
+            if !wanted[index].0 && !self.inputs.contains_key(&block.id){continue;}
             let placeholder = if index + 1 == self.document.blocks.len() {
                 "Escreva ou digite /…"
             } else {
@@ -382,13 +526,44 @@ impl BlockEditor {
                     BlockInput {
                         state,
                         _subscription: subscription,
-                        highlight: Default::default(),
+                        highlight: Default::default(),highlight_language:None,
                         language_menu: None,
                         _language_subscription: None,
+                        checkbox: None,
+                        _checkbox_subscription: None,
                     },
                 );
             }
             let state = self.inputs[&block.id].state.clone();
+            if let Kind::Task(done) = block.kind {
+                if self.inputs[&block.id].checkbox.is_none() {
+                    let checkbox = cx.new(|cx| Checkbox::new("", done, cx));
+                    let block_id = block.id.clone();
+                    let subscription = cx.subscribe_in(&checkbox, window, move |this, _, event, w, cx| {
+                        let CheckboxEvent::Toggle(done) = event;
+                        let Some(index) = this.document.blocks.iter().position(|block| block.id == block_id) else {
+                            return;
+                        };
+                        if !matches!(this.document.blocks[index].kind, Kind::Task(current) if current != *done) {
+                            return;
+                        }
+                        this.checkpoint(cx);
+                        this.document.blocks[index].kind = Kind::Task(*done);
+                        this.document.blocks[index].invalidate();
+                        this.changed(w, cx);
+                    });
+                    let input = self.inputs.get_mut(&block.id).unwrap();
+                    input.checkbox = Some(checkbox);
+                    input._checkbox_subscription = Some(subscription);
+                }
+                self.inputs[&block.id].checkbox.as_ref().unwrap().update(cx, |checkbox, cx| {
+                    checkbox.set_checked(done, cx);
+                });
+            } else {
+                let input = self.inputs.get_mut(&block.id).unwrap();
+                input.checkbox = None;
+                input._checkbox_subscription = None;
+            }
             if state.read(cx).value().as_ref() != block.text {
                 let value = block.text.clone();
                 state.update(cx, |s, cx| s.set_value(value, window, cx));
@@ -439,8 +614,18 @@ impl BlockEditor {
                 menu.update(cx, |menu, cx| menu.set_open(false, cx));
             }
             let input = self.inputs.get_mut(&block.id).unwrap();
+            if let Kind::Code(language)=&block.kind {
+                if input.highlight_language.as_ref()!=Some(language){
+                    let cache=input.highlight.clone();let language=language.clone();
+                    input.highlight_language=Some(language.clone());
+                    state.update(cx,|s,cx|s.set_inline_highlight_provider(Some(Box::new(move|text,range,theme|cache.borrow_mut().styles_in_range(&language,&text.to_string(),range,theme))),cx));
+                }
+            }else if input.highlight_language.take().is_some(){
+                state.update(cx,|s,cx|s.set_inline_highlight_provider(None,cx));
+                *input.highlight.borrow_mut()=Default::default();
+            }
             let styles = match &block.kind {
-                Kind::Code(lang) => input.highlight.styles(lang, &block.text, cx.theme().highlight_theme.clone()),
+                Kind::Code(_) => Vec::new(),
                 _ => inline_styles(block),
             };
             state.update(cx, |s, cx| {
@@ -449,7 +634,118 @@ impl BlockEditor {
                 s.set_inline_font_ranges(inline_fonts(block), cx);
             });
         }
+        self.sync_tables(window,cx);
     }
+    fn sync_tables(&mut self, window:&mut Window, cx:&mut Context<Self>) {
+        let tables:Vec<_>=self.document.blocks.iter().filter(|b|b.kind==Kind::Table).map(|b|(b.id.clone(),b.text.clone())).collect();
+        let ids:HashSet<_>=tables.iter().map(|(id,_)|id.clone()).collect();self.tables.retain(|id,_|ids.contains(id));
+        for (id,source) in tables {
+            if self.tables.get(&id).is_some_and(|table|table.source==source){continue;}
+            let Some(model)=crate::markdown_table::MarkdownTable::parse(&source) else{self.tables.remove(&id);continue;};
+            let table=self.tables.entry(id.clone()).or_insert_with(||TableInputs{row_heights:Default::default(),source:source.clone(),model:model.clone(),cells:HashMap::new()});
+            table.cells.retain(|&(r,c),_|r<model.rows.len()&&c<model.align.len());
+            for (r,row) in model.rows.iter().enumerate(){for (c,block) in row.iter().enumerate(){
+                if !table.cells.contains_key(&(r,c)){
+                    let state=cx.new(|cx|{let mut s=InputState::new(window,cx).auto_grow(1,8).block_mode(true);s.set_value(block.text.clone(),window,cx);s});
+                    let cell_id=id.clone();let subscription=cx.subscribe_in(&state,window,move|this,_,event,w,cx|this.table_event(&cell_id,r,c,event,w,cx));
+                    table.cells.insert((r,c),CellInput{state,_subscription:subscription});
+                }
+                table.cells[&(r,c)].state.update(cx,|s,cx|{
+                    if s.value().as_ref()!=block.text {let old=s.value().to_string();let range=s.selection_range();let start=sparkpad_sync::transform_cursor(&old,&block.text,range.start);let end=sparkpad_sync::transform_cursor(&old,&block.text,range.end);s.set_value(block.text.clone(),window,cx);s.set_byte_selection(start.min(end)..start.max(end),cx);}
+                    s.set_inline_highlights(inline_styles(block),cx);s.set_inline_font_ranges(inline_fonts(block),cx);
+                });
+            }}
+            table.row_heights.borrow_mut().clear();table.model=model;table.source=source;
+        }
+    }
+    fn focused_table_cell(&self,window:&Window,cx:&App)->Option<(String,usize,usize)>{
+        self.tables.iter().find_map(|(id,t)|t.cells.iter().find_map(|(&(r,c),cell)|cell.state.read(cx).focus_handle(cx).is_focused(window).then(||(id.clone(),r,c))))
+    }
+    fn focus_table_cell(&mut self,id:&str,r:usize,c:usize,window:&mut Window,cx:&mut Context<Self>){
+        self.clear_text_selections(None,cx);self.mouse_anchor=None;self.selected_block=None;self.active=Some(id.into());self.menu=false;
+        if let Some(cell)=self.tables.get(id).and_then(|t|t.cells.get(&(r,c))){cell.state.update(cx,|s,cx|s.focus(window,cx));}
+        cx.emit(EditorEvent::Editing);cx.notify();
+    }
+    fn save_table(&mut self,id:&str,source:String,window:&mut Window,cx:&mut Context<Self>){
+        let Some(i)=self.document.blocks.iter().position(|b|b.id==id&&b.kind==Kind::Table)else{return};
+        if self.document.blocks[i].text==source{return;}
+        self.checkpoint(cx);self.document.blocks[i].edit(source);self.changed(window,cx);
+    }
+    fn table_event(&mut self,id:&str,r:usize,c:usize,event:&InputEvent,window:&mut Window,cx:&mut Context<Self>){
+        match event {
+            InputEvent::Change=>{
+                let Some(table)=self.tables.get(id)else{return};let Some(cell)=table.cells.get(&(r,c))else{return};
+                let state=cell.state.clone();let value=state.read(cx).value().to_string();let mut block=table.model.rows[r][c].clone();if block.text==value{return;}block.edit(value);
+                let Some(source)=self.document.blocks.iter().find(|b|b.id==id).map(|b|b.text.clone())else{return};
+                let table=self.tables.get_mut(id).unwrap();let next=table.model.edit_cell(&source,r,c,&block);
+                // Preserve the live cell's identity/focus, refreshing only its styles.
+                if !block.text.trim().is_empty()&&block.text.trim()==block.text&&!block.text.contains(['\n','\r']) {
+                    table.source=next.clone();table.row_heights.borrow_mut().remove(&r);
+                    state.update(cx,|s,cx|{s.set_inline_highlights(inline_styles(&block),cx);s.set_inline_font_ranges(inline_fonts(&block),cx);});
+                }
+                self.save_table(id,next,window,cx);
+            }
+            InputEvent::Focus|InputEvent::BlockSelectionStart{..}=>{self.mouse_anchor=None;self.text_selection=None;self.selected_block=None;self.active=Some(id.into());self.menu=false;cx.emit(EditorEvent::Editing);cx.notify();}
+            InputEvent::BlockEnter=>{
+                let rows=self.tables.get(id).map(|t|t.model.rows.len()).unwrap_or(0);if r+1>=rows{self.table_structure(id,TableChange::AddRow,window,cx);}self.focus_table_cell(id,r+1,c,window,cx);
+            }
+            InputEvent::BlockUndo=>self.table_history(false,id,r,c,window,cx),
+            InputEvent::BlockRedo=>self.table_history(true,id,r,c,window,cx),
+            _=>{}
+        }
+    }
+    fn table_history(&mut self,redo:bool,id:&str,r:usize,c:usize,window:&mut Window,cx:&mut Context<Self>){
+        self.history(redo,window,cx);
+        if let Some(table)=self.tables.get(id){let row=r.min(table.model.rows.len()-1);let col=c.min(table.model.align.len()-1);self.focus_table_cell(id,row,col,window,cx);}
+    }
+    fn table_structure(&mut self,id:&str,change:TableChange,window:&mut Window,cx:&mut Context<Self>){
+        let Some(table)=self.tables.get(id)else{return};let mut model=table.model.clone();
+        match change {TableChange::AddRow=>model.add_row(),TableChange::AddColumn=>model.add_column(),TableChange::RemoveRow(r)=>model.remove_row(r),TableChange::RemoveColumn(c)=>model.remove_column(c)}
+        self.save_table(id,model.markdown(),window,cx);
+    }
+    fn table_tab(&mut self,back:bool,window:&mut Window,cx:&mut Context<Self>)->bool{
+        let Some((id,r,c))=self.focused_table_cell(window,cx)else{return false};let cols=self.tables[&id].model.align.len();let rows=self.tables[&id].model.rows.len();let index=r*cols+c;
+        if back&&index==0{return true;}
+        let next=if back{index-1}else{index+1};if next>=rows*cols{self.table_structure(&id,TableChange::AddRow,window,cx);}
+        self.focus_table_cell(&id,next/cols,next%cols,window,cx);true
+    }
+    fn render_table(&self,id:&str,window:&mut Window,top:f32,cx:&mut Context<Self>)->AnyElement{
+        let Some(table)=self.tables.get(id)else{return div().child("Tabela inválida").into_any_element()};
+        let mut grid=div().flex().flex_col().min_w(px(180.*table.model.align.len() as f32+32.)).border_1().border_color(neutral(0x303030)).rounded_md().overflow_hidden();
+        let viewport=self.document_scroll.as_ref().map(|s|s.bounds()).filter(|b|b.size.height>px(0.)).unwrap_or(Bounds::new(point(px(0.),px(0.)),window.viewport_size()));
+        let focused=self.focused_table_cell(window,cx).filter(|(table,_,_)|table==id).map(|(_,row,_)|row);
+        let mut y=top+5.;let mut skipped=0.;
+        for (r,row) in table.model.rows.iter().enumerate(){
+            let height=table.row_heights.borrow().get(&r).copied().unwrap_or_else(||{
+                let lines=row.iter().map(|cell|cell.text.lines().map(|line|(line.chars().count().max(1)+12)/13).sum::<usize>().max(1)).max().unwrap_or(1).min(8);
+                (lines as f32*(self.font_size-2.)*1.6+16.+if r==0{24.}else{0.}).max(48.)
+            });
+            let visible=table.model.rows.len()<=80||focused==Some(r)||(y+height>=f32::from(viewport.top())-300.&&y<=f32::from(viewport.bottom())+300.);y+=height;
+            if !visible{skipped+=height;continue;}
+            if skipped>0.{grid=grid.child(div().w_full().h(px(skipped)).flex_none());skipped=0.;}
+            let heights=table.row_heights.clone();let owner=cx.entity().downgrade();
+            let mut line=div().relative().flex().child(canvas(move|bounds,_,cx|{let old=heights.borrow_mut().insert(r,f32::from(bounds.size.height));if old.is_none_or(|h|(h-f32::from(bounds.size.height)).abs()>0.5){let owner=owner.clone();cx.defer(move|cx|{let _=owner.update(cx,|_,cx|cx.notify());});}},|_,_,_,_|{}).absolute().inset_0()).when(r==0,|d|d.bg(neutral(0x222222)));
+            for (c,_) in row.iter().enumerate(){
+                let remove_id=id.to_owned();
+                let mut cell=div().w(px(180.)).flex_none().min_h(px(48.)).px_3().py_2().border_r_1().border_b_1().border_color(neutral(0x303030));
+                if r==0 {cell=cell.child(div().flex().justify_end().child(Button::new(SharedString::from(format!("remove-col-{id}-{c}")),"−").size(ButtonSize::Xs).variant(ButtonVariant::Ghost).disabled(table.model.align.len()==1).on_click(cx.listener(move|this,_,w,cx|this.table_structure(&remove_id,TableChange::RemoveColumn(c),w,cx)))));}
+                cell=cell.child(NativeInput::new(&table.cells[&(r,c)].state).appearance(false).bare_metrics().w_full().font_family(self.font_family.clone()).font_weight(if r==0{FontWeight::SEMIBOLD}else{FontWeight::NORMAL}).text_align(match table.model.align[c]{markdown::mdast::AlignKind::Right=>TextAlign::Right,markdown::mdast::AlignKind::Center=>TextAlign::Center,_=>TextAlign::Left}).text_size(px(self.font_size-2.)));
+                line=line.child(cell);
+            }
+            let remove_id=id.to_owned();
+            line=line.child(div().w(px(32.)).flex_none().flex().items_center().justify_center().when(r>0,|d|d.child(Button::new(SharedString::from(format!("remove-row-{id}-{r}")),"−").size(ButtonSize::Xs).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|this.table_structure(&remove_id,TableChange::RemoveRow(r),w,cx))))));
+            grid=grid.child(line);
+        }
+        if skipped>0.{grid=grid.child(div().w_full().h(px(skipped)).flex_none());}
+        let row_id=id.to_owned();let col_id=id.to_owned();
+        div().flex_1().min_w_0().flex().flex_col().gap_2()
+            .child(div().id(SharedString::from(format!("table-scroll-{id}"))).w_full().min_w_0().overflow_x_scroll().child(grid))
+            .child(div().flex().gap_2()
+                .child(Button::new(SharedString::from(format!("add-row-{id}")),"+ Linha").size(ButtonSize::Sm).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|this.table_structure(&row_id,TableChange::AddRow,w,cx))))
+                .child(Button::new(SharedString::from(format!("add-column-{id}")),"+ Coluna").size(ButtonSize::Sm).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|this.table_structure(&col_id,TableChange::AddColumn,w,cx)))))
+            .into_any_element()
+    }
+
     fn point_in_document(&self, p: Point<Pixels>, cx: &App) -> Option<(usize, usize)> {
         let rows = self.row_bounds.borrow();
         let mut target = None;
@@ -472,19 +768,20 @@ impl BlockEditor {
         self.active = Some(self.document.blocks[selection.anchor.0].id.clone());
         for (i, block) in self.document.blocks.iter().enumerate() {
             let range = selection.range(i, block.text.len());
-            self.state(i).update(cx, |s, cx| {
+            if let Some(input)=self.inputs.get(&block.id){input.state.update(cx, |s, cx| {
                 s.cancel_mouse_selection();
                 s.set_byte_selection(range, cx);
-            });
+            });}
         }
         cx.notify();
     }
     fn focused_code_index(&self, window: &Window, cx: &App) -> Option<usize> {
         self.document.blocks.iter().enumerate().find_map(|(i, block)| {
-            (matches!(block.kind, Kind::Code(_)) && self.state(i).read(cx).focus_handle(cx).is_focused(window)).then_some(i)
+            (matches!(block.kind, Kind::Code(_)) && self.inputs.get(&block.id).is_some_and(|input|input.state.read(cx).focus_handle(cx).is_focused(window))).then_some(i)
         })
     }
     fn select_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((id,r,c))=self.focused_table_cell(window,cx){let state=self.tables[&id].cells[&(r,c)].state.clone();let len=state.read(cx).value().len();state.update(cx,|s,cx|s.set_byte_selection(0..len,cx));return;}
         self.flush(window, cx);
         if let Some(i) = self.focused_code_index(window, cx) {
             self.clear_text_selections(None, cx);
@@ -499,6 +796,7 @@ impl BlockEditor {
         }
         let last = self.document.blocks.len() - 1;
         self.clear_text_selections(None, cx);
+        self.activate(0,0,window,cx);
         self.state(0).update(cx, |s, cx| s.focus(window, cx));
         self.apply_text_selection(
             TextSelection {
@@ -545,6 +843,7 @@ impl BlockEditor {
         Some(((i, range.start), (i, range.end)))
     }
     fn copy_rich(&mut self, cut: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.focused_table_cell(window,cx).is_some(){return false;}
         let Some((a, z)) = self.clipboard_range(cx) else { return false; };
         if a == z && self.selected_block.is_none() { return false; }
         let fragment = self.document.fragment(a, z);
@@ -564,10 +863,22 @@ impl BlockEditor {
         true
     }
     fn paste_clipboard(&mut self, plain_only: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.focused_table_cell(window,cx).is_some(){return false;}
         let Some((a, z)) = self.clipboard_range(cx) else { return false; };
+        if !plain_only && !matches!(self.document.blocks[a.0].kind,Kind::Code(_)|Kind::Source|Kind::Table){
+            if let Some(image)=cx.read_from_clipboard().and_then(|item|item.into_entries().find_map(|e|if let ClipboardEntry::Image(image)=e{Some(image)}else{None})) {
+                if let Some(root)=&self.asset_directory {
+                    let ext=match image.format {ImageFormat::Png=>"png",ImageFormat::Jpeg=>"jpg",ImageFormat::Webp=>"webp",ImageFormat::Gif=>"gif",ImageFormat::Svg=>"svg",_=>""};
+                    match crate::document_images::store(root,ext,image.bytes()) {
+                        Ok(url)=>{self.checkpoint(cx);let block=Block::new(Kind::Image{url,title:None},String::new());self.document.replace_fragment(a,z,vec![block]);self.clear_text_selections(None,cx);self.changed(window,cx);return true;},
+                        Err(error)=>{self.media_error=Some(error.to_string());cx.notify();return true;}
+                    }
+                }
+            }
+        }
         let plain = crate::macos::clipboard_string("public.utf8-plain-text")
             .or_else(|| cx.read_from_clipboard().and_then(|item| item.text()));
-        if matches!(self.document.blocks[a.0].kind, Kind::Code(_) | Kind::Source) || plain_only {
+        if matches!(self.document.blocks[a.0].kind, Kind::Code(_) | Kind::Source | Kind::Table) || plain_only {
             let Some(text) = plain else { return false; };
             self.checkpoint(cx);
             let (i, cursor) = self.document.replace_selection(a, z, &text);
@@ -713,6 +1024,8 @@ impl BlockEditor {
         self.active = Some(self.document.blocks[i].id.clone());
         self.clear_text_selections(None, cx);
         self.sync_inputs(window, cx);
+        let id=self.document.blocks[i].id.clone();
+        if self.tables.contains_key(&id){self.focus_table_cell(&id,0,0,window,cx);return;}
         self.state(i).update(cx, |s, cx| {
             s.set_byte_selection(cursor..cursor, cx);
             s.focus(window, cx);
@@ -721,7 +1034,7 @@ impl BlockEditor {
         cx.notify();
     }
     fn flush(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let ids: Vec<_> = self.document.blocks.iter().map(|b| b.id.clone()).collect();
+        let ids: Vec<_> = self.inputs.keys().cloned().collect();
         for id in ids {
             self.input_event(&id, &InputEvent::Change, window, cx);
         }
@@ -848,7 +1161,7 @@ impl BlockEditor {
         match event {
             InputEvent::BlockEnter => {
                 self.active = Some(id.into());
-                if matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Source) {
+                if matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Source | Kind::Table) {
                     state.update(cx, |s, cx| {
                         if matches!(self.document.blocks[i].kind, Kind::Code(_)) { s.replace("\n", window, cx); }
                         else { s.insert("\n", window, cx); }
@@ -868,7 +1181,7 @@ impl BlockEditor {
                 if matches!(self.document.blocks[i].kind, Kind::Code(_)) { return; }
                 self.active = Some(id.into());
                 if self.document.blocks[i].kind != Kind::Paragraph
-                    && !matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Source)
+                    && !matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Source | Kind::Table)
                 {
                     self.menu = false;
                     self.convert(Kind::Paragraph, window, cx);
@@ -908,6 +1221,14 @@ impl BlockEditor {
         }
     }
     fn history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(shared)=&mut self.shared {
+            if shared.undo(redo) {
+                let value=shared.document.text("body");
+                self.reconcile_value(&value,window,cx);
+                cx.emit(EditorEvent::Change);
+            }
+            return;
+        }
         let snapshot = if redo {
             self.redo.pop()
         } else {
@@ -936,7 +1257,7 @@ impl BlockEditor {
     }
     fn indent_code(&mut self, outdent: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(i) = self.document.blocks.iter().enumerate().find_map(|(i, b)| {
-            (matches!(b.kind, Kind::Code(_)) && self.state(i).read(cx).focus_handle(cx).is_focused(window)).then_some(i)
+            (matches!(b.kind, Kind::Code(_)) && self.inputs.get(&b.id).is_some_and(|input|input.state.read(cx).focus_handle(cx).is_focused(window))).then_some(i)
         }) else { return false; };
         if self.text_selection.is_some_and(|s| s.anchor.0 != s.head.0) { return false; }
         let state = self.state(i);
@@ -988,23 +1309,30 @@ impl BlockEditor {
         if self.menu && self.selected_block.is_none() && block.text.starts_with('/') {
             block.edit(String::new());
         }
-        block.kind = kind;
+        block.kind = kind.clone();
+        if kind==Kind::Table && block.text.is_empty(){block.edit("| Coluna 1 | Coluna 2 |\n| --- | --- |\n| Valor | Valor |".into());}
         block.invalidate();
         self.menu = false;
         self.slash_menu.update(cx, |menu, cx| menu.dismiss(cx));
         self.changed(window, cx);
-        if self.selected_block.is_none() {
+        if matches!(kind,Kind::Image{..}) {self.choose_image(self.document.blocks[i].id.clone(),window,cx);}
+        else if self.selected_block.is_none() {
             self.activate(i, self.document.blocks[i].text.len(), window, cx);
         }
     }
     fn format(&mut self, style: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((id,r,c))=self.focused_table_cell(window,cx){
+            let table=&self.tables[&id];let state=table.cells[&(r,c)].state.clone();let range=state.read(cx).selection_range();if range.is_empty(){return;}
+            let mut cell=table.model.rows[r][c].clone();cell.format(range.clone(),style);
+            let source=&self.document.blocks.iter().find(|b|b.id==id).unwrap().text;let next=table.model.replace_cell(source,r,c,&cell);self.save_table(&id,next,window,cx);state.update(cx,|s,cx|s.set_byte_selection(range,cx));return;
+        }
         if let Some(selection) = self.text_selection {
             let (a, z) = selection.ordered();
-            if !(a.0..=z.0).any(|i| !matches!(self.document.blocks[i].kind, Kind::Code(_)) && !selection.range(i, self.document.blocks[i].text.len()).is_empty()) { return; }
+            if !(a.0..=z.0).any(|i| !matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) && !selection.range(i, self.document.blocks[i].text.len()).is_empty()) { return; }
             self.checkpoint(cx);
             let all = (a.0..=z.0)
                 .filter(|i| {
-                    !matches!(self.document.blocks[*i].kind, Kind::Code(_)) && !selection
+                    !matches!(self.document.blocks[*i].kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) && !selection
                         .range(*i, self.document.blocks[*i].text.len())
                         .is_empty()
                 })
@@ -1015,7 +1343,7 @@ impl BlockEditor {
                     )
                 });
             for i in a.0..=z.0 {
-                if matches!(self.document.blocks[i].kind, Kind::Code(_)) { continue; }
+                if matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) { continue; }
                 let range = selection.range(i, self.document.blocks[i].text.len());
                 if self.document.blocks[i].is_formatted(range.clone(), style) == all {
                     self.document.blocks[i].format(range, style);
@@ -1026,7 +1354,7 @@ impl BlockEditor {
             return;
         }
         let Some(i) = self.active_index() else { return };
-        if matches!(self.document.blocks[i].kind, Kind::Code(_)) { return; }
+        if matches!(self.document.blocks[i].kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) { return; }
         let state = self.state(i);
         let range = state.read(cx).selection_range();
         if range.is_empty() {
@@ -1127,8 +1455,9 @@ impl BlockEditor {
             return;
         };
         let snapshot = self.snapshot(cx);
+        if let Some(shared)=&mut self.shared {shared.boundary();}
         if self.document.move_to(&drag.id, &target, after) {
-            self.undo.push(snapshot);
+            if self.shared.is_none() {self.undo.push(snapshot);}
             if self.undo.len() > 100 {
                 self.undo.remove(0);
             }
@@ -1287,7 +1616,7 @@ impl BlockEditor {
                     Button::icon("block-undo", "iconoir/regular/undo.svg")
                         .size(ButtonSize::IconSm)
                         .variant(ButtonVariant::Ghost)
-                        .disabled(self.undo.is_empty())
+                        .disabled(self.shared.as_ref().map(|s|!s.can_undo()).unwrap_or(self.undo.is_empty()))
                         .on_click(cx.listener(|this, _, w, cx| this.history(false, w, cx))),
                 ),
             )
@@ -1296,7 +1625,7 @@ impl BlockEditor {
                     Button::icon("block-redo", "iconoir/regular/redo.svg")
                         .size(ButtonSize::IconSm)
                         .variant(ButtonVariant::Ghost)
-                        .disabled(self.redo.is_empty())
+                        .disabled(self.shared.as_ref().map(|s|!s.can_redo()).unwrap_or(self.redo.is_empty()))
                         .on_click(cx.listener(|this, _, w, cx| this.history(true, w, cx))),
                 ),
             )
@@ -1304,7 +1633,7 @@ impl BlockEditor {
     fn selection_toolbar_index(&self, cx: &App) -> Option<usize> {
         let selection = self.text_selection?;
         let (a, z) = selection.ordered();
-        (a.0..=z.0).find(|i| !matches!(self.document.blocks[*i].kind, Kind::Code(_)) && !self.state(*i).read(cx).selection_range().is_empty())
+        (a.0..=z.0).find(|i| !matches!(self.document.blocks[*i].kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) && self.inputs.get(&self.document.blocks[*i].id).is_some_and(|input|!input.state.read(cx).selection_range().is_empty()))
     }
 }
 /// Bounds are window coordinates from the current layout, including scrolling and wrapping.
@@ -1352,6 +1681,11 @@ fn block_types() -> Vec<(&'static str, Kind, &'static str)> {
             "iconoir/regular/code-brackets.svg",
         ),
         ("Divisor", Kind::Divider, "iconoir/regular/minus.svg"),
+        ("Imagem",Kind::Image{url:String::new(),title:None},"iconoir/regular/media-image.svg"),
+        ("Tabela",Kind::Table,"iconoir/regular/table.svg"),
+        ("Título 4",Kind::Heading(4),"iconoir/regular/text-size.svg"),
+        ("Título 5",Kind::Heading(5),"iconoir/regular/text-size.svg"),
+        ("Título 6",Kind::Heading(6),"iconoir/regular/text-size.svg"),
     ]
 }
 fn kind_display(kind: &Kind) -> (&'static str, &'static str) {
@@ -1426,7 +1760,7 @@ fn code_language_items(current: &str) -> Vec<MenuItem> {
     }).collect()
 }
 fn inline_fonts(block: &Block) -> Vec<(std::ops::Range<usize>, SharedString)> {
-    if matches!(block.kind, Kind::Code(_)) { return vec![]; }
+    if matches!(block.kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) { return vec![]; }
     let mut ranges: Vec<(std::ops::Range<usize>, SharedString)> = Vec::new();
     for span in block.spans.iter().filter(|span| span.marks.code) {
         if let Some((range, _)) = ranges.last_mut().filter(|(range, _)| range.end == span.range.start) {
@@ -1475,6 +1809,8 @@ fn inline_styles(block: &Block) -> Vec<(std::ops::Range<usize>, HighlightStyle)>
 }
 impl Render for BlockEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let planned=self.virtual_rows(window);
+        if planned.iter().enumerate().any(|(i,(visible,_,_))|*visible&&!self.inputs.contains_key(&self.document.blocks[i].id)){self.sync_inputs(window,cx);}
         let dragging = cx.has_active_drag();
         self.row_bounds.borrow_mut().retain(|id, _| id != "__toolbar" && !id.starts_with("__code-tools-") && !id.starts_with("__code-copy-"));
         let mut root = div()
@@ -1489,10 +1825,10 @@ impl Render for BlockEditor {
             .text_size(px(self.font_size))
             .line_height(relative(1.6))
             .capture_action(cx.listener(|this, _: &gpui_component::input::IndentInline, w, cx| {
-                if this.indent_code(false, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
+                if this.table_tab(false,w,cx) || this.indent_code(false, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
             }))
             .capture_action(cx.listener(|this, _: &gpui_component::input::OutdentInline, w, cx| {
-                if this.indent_code(true, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
+                if this.table_tab(true,w,cx) || this.indent_code(true, w, cx) { cx.stop_propagation(); } else { cx.propagate(); }
             }))
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<BlockDrag>, _, cx| {
                 this.update_drop_target(e, cx)
@@ -1599,7 +1935,7 @@ impl Render for BlockEditor {
                     window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Capture {
                             let _ = selection_owner.update(cx, |this, cx| {
-                                this.extend_document_selection(event, window, cx)
+                                if !this.resize_image(event,window,cx) {this.extend_document_selection(event, window, cx)}
                             });
                         }
                     });
@@ -1607,6 +1943,7 @@ impl Render for BlockEditor {
                     window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
                         if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
                             let _ = selection_owner.update(cx, |this, cx| {
+                                if this.resizing_image.take().is_some(){cx.stop_propagation();cx.notify();}
                                 this.selection_pointer = None;
                                 if this.mouse_anchor.take().is_some()
                                     && this.text_selection.is_some()
@@ -1637,7 +1974,20 @@ impl Render for BlockEditor {
             .absolute()
             .size_full(),
         );
+        let origin=self.layout_origin.clone();let layout_width=self.layout_width.clone();let owner=cx.entity().downgrade();let scroll=self.document_scroll.clone();
+        root=root.child(canvas(move|bounds,_,cx|{
+            let offset=scroll.as_ref().map(|s|s.offset()).unwrap_or_default();let next=bounds.origin-offset;
+            let resized=(layout_width.get()-f32::from(bounds.size.width)).abs()>0.5;
+            let moved=origin.get().is_none_or(|old|old.y!=next.y);
+            origin.set(Some(next));layout_width.set(f32::from(bounds.size.width));
+            if resized||moved {let owner=owner.clone();cx.defer(move|cx|{let _=owner.update(cx,|this,cx|{if resized{this.row_heights.borrow_mut().clear();this.estimated_heights.clear();}cx.notify();});});}
+        },|_,_,_,_|{}).absolute().inset_0());
+        if let Some(error)=&self.media_error {root=root.child(div().text_sm().text_color(rgb(0xf08b8b)).child(error.clone()));}
+        let mut skipped=0.;let mut rendered=HashSet::new();
         for i in 0..self.document.blocks.len() {
+            if !planned[i].0{skipped+=planned[i].1+8.;continue;}
+            if skipped>0.{root=root.child(div().w_full().h(px((skipped-8.).max(0.))).flex_none());skipped=0.;}
+            rendered.insert(self.document.blocks[i].id.clone());
             let key=self.document.blocks[i].id.clone();
             let hover=self.hover_motion.entry(key.clone()).or_insert_with(||empire_ui::motion::Tween::new(0.));
             hover.set(if !dragging && self.hovered_block.as_ref()==Some(&key) {1.} else {0.},120);
@@ -1656,7 +2006,7 @@ impl Render for BlockEditor {
                         .focus_handle(cx)
                         .within_focused(window, cx)
                     || self.type_menu.read(cx).is_open());
-            let text_selection = !matches!(kind, Kind::Code(_)) && self
+            let text_selection = !matches!(kind, Kind::Code(_) | Kind::Table | Kind::Image { .. }) && self
                 .selection_toolbar_index(cx)
                 .map(|first| first == i)
                 .unwrap_or_else(|| {
@@ -1702,7 +2052,7 @@ impl Render for BlockEditor {
                                     && event.position.x >= bounds.left() + px(58.)
                             });
                     if in_content {
-                        if event.click_count == 1 {
+                        if event.click_count == 1 && !this.tables.contains_key(&interaction_id) {
                             this.mouse_anchor = this.point_in_document(event.position, cx);
                         }
                         this.selected_block = None;
@@ -1732,10 +2082,14 @@ impl Render for BlockEditor {
                 .line_height(relative(1.6));
             let geometry = self.row_bounds.clone();
             let measured_id = id.clone();
+            let is_image=matches!(kind,Kind::Image{..});let image_owner=cx.entity().downgrade();let heights=self.row_heights.clone();let height_owner=cx.entity().downgrade();let height_id=id.clone();
             row = row.child(
                 canvas(
-                    move |bounds, _, _| {
-                        geometry.borrow_mut().insert(measured_id.clone(), bounds);
+                    move |bounds, _, cx| {
+                        let before=geometry.borrow_mut().insert(measured_id.clone(), bounds);
+                        let prior=heights.borrow_mut().insert(height_id.clone(),f32::from(bounds.size.height));
+                        if prior.is_none_or(|old|(old-f32::from(bounds.size.height)).abs()>0.5){let owner=height_owner.clone();cx.defer(move|cx|{let _=owner.update(cx,|_,cx|cx.notify());});}
+                        if is_image && before.is_none_or(|old|old.size.width!=bounds.size.width){let owner=image_owner.clone();cx.defer(move|cx|{let _=owner.update(cx,|_,cx|cx.notify());});}
                     },
                     |_, _, _, _| {},
                 )
@@ -1855,18 +2209,20 @@ impl Render for BlockEditor {
             if let Some(marker) = marker {
                 row = row.child(div().flex_none().font_family(self.font_family.clone()).text_color(neutral(0xd4d4d4)).child(marker));
             }
-            if let Kind::Task(done) = kind {
+            if let Kind::Task(_) = kind {
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("check-{id}")))
                         .flex_none()
-                        .cursor_pointer()
-                        .child(if done { "☑" } else { "☐" })
-                        .on_click(cx.listener(move |this, _, w, cx| {
-                            this.checkpoint(cx);
-                            this.document.blocks[i].kind = Kind::Task(!done);
-                            this.document.blocks[i].invalidate();
-                            this.changed(w, cx);
+                        .h(px(size * 1.6))
+                        .flex()
+                        .items_center()
+                        .child(self.inputs[&id].checkbox.as_ref().unwrap().clone())
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.mouse_anchor = None;
+                            cx.stop_propagation();
+                        }))
+                        .on_click(cx.listener(|_, _, _, cx| {
                             cx.stop_propagation();
                         })),
                 );
@@ -1881,7 +2237,31 @@ impl Render for BlockEditor {
                         .bg(neutral(0x414141))
                         .on_click(cx.listener(move |this, _, w, cx| this.activate(i, 0, w, cx))),
                 );
-            } else if kind == Kind::Source && !active && self.text_selection.is_none() {
+            } else if let Kind::Image{url,title}=&kind {
+                let image_id=id.clone();let resize_id=id.clone();let alt_id=id.clone();let smaller_id=id.clone();let larger_id=id.clone();
+                let available=self.row_bounds.borrow().get(&id).map(|b|f32::from(b.size.width)-74.).unwrap_or(480.).max(100.);
+                let width=crate::blocks::image_width(title.as_deref());
+                let source=self.asset_directory.as_ref().and_then(|root|crate::document_images::local(root,url)).map(ImageSource::from)
+                    .or_else(||(url.starts_with("https://")||url.starts_with("http://")).then(||ImageSource::from(SharedString::from(url.clone()))));
+                let mut content=div().flex_1().min_w_0().flex().flex_col().gap_2();
+                if let Some(source)=source {
+                    content=content.child(div().relative().w(px(available*f32::from(width)/100.)).max_w_full()
+                        .child(img(source).w(px(available*f32::from(width)/100.)).max_w_full().h_auto().object_fit(ObjectFit::Contain).rounded_md())
+                        .child(div().id(SharedString::from(format!("image-resize-{id}"))).absolute().right_0().top(relative(0.5)).w(px(7.)).h(px(36.)).rounded_sm().bg(neutral(0x999999)).cursor(CursorStyle::ResizeLeftRight)
+                            .on_mouse_down(MouseButton::Left,cx.listener(move|this,_,w,cx|{this.checkpoint(cx);this.resizing_image=Some(resize_id.clone());this.select_block(resize_id.clone(),w,cx);w.prevent_default();cx.stop_propagation();}))))
+                        .child(div().flex().items_center().gap_2()
+                            .child(Button::new(SharedString::from(format!("replace-image-{id}")),"Trocar imagem").size(ButtonSize::Sm).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|this.choose_image(image_id.clone(),w,cx))))
+                            .child(Button::new(SharedString::from(format!("caption-image-{id}")),"Legenda").size(ButtonSize::Sm).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|{if let Some(i)=this.document.blocks.iter().position(|b|b.id==alt_id){this.activate(i,this.document.blocks[i].text.len(),w,cx);}})))
+                            .child(Button::new(SharedString::from(format!("image-smaller-{id}")),"−").size(ButtonSize::Sm).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|this.set_image_width(&smaller_id,width.saturating_sub(10),w,cx))))
+                            .child(div().text_xs().text_color(neutral(0x999999)).child(format!("{width}%")))
+                            .child(Button::new(SharedString::from(format!("image-larger-{id}")),"+").size(ButtonSize::Sm).variant(ButtonVariant::Ghost).on_click(cx.listener(move|this,_,w,cx|this.set_image_width(&larger_id,width.saturating_add(10),w,cx)))));
+                } else {content=content.child(Button::new(SharedString::from(format!("upload-image-{id}")),"Escolher imagem").variant(ButtonVariant::Secondary).on_click(cx.listener(move|this,_,w,cx|this.choose_image(image_id.clone(),w,cx))));}
+                if active && self.selected_block.is_none(){content=content.child(NativeInput::new(&self.state(i)).appearance(false).w_full());}
+                else if !block.text.is_empty(){content=content.child(div().text_sm().text_color(neutral(0x999999)).child(block.text.clone()));}
+                row=row.child(content);
+            } else if kind==Kind::Table {
+                row=row.child(self.render_table(&id,window,planned[i].2,cx));
+            } else if kind==Kind::Source && !active && self.text_selection.is_none() {
                 let raw = block.markdown();
                 let cursor = block.text.len();
                 row = row.child(
@@ -1993,6 +2373,9 @@ impl Render for BlockEditor {
             }
             root = root.child(row);
         }
+        if skipped>0.{root=root.child(div().w_full().h(px((skipped-8.).max(0.))).flex_none());}
+        self.row_bounds.borrow_mut().retain(|id,_|rendered.contains(id)||id.starts_with("__"));
+        self.hover_motion.retain(|id,t|rendered.contains(id)||t.moving());
         if self.hover_motion.values().any(|t|t.moving()) {window.request_animation_frame();}
         root.child(
             div()
@@ -2836,6 +3219,165 @@ pub fn verify_native_editor(cx: &mut App) {
     assert!(!editor.read(cx).menu && !slash.read(cx).is_open());
     assert_eq!(editor.read(cx).document.blocks[0].text, "/código", "Escape only dismisses the menu");
     println!("Native slash dropdown verified: input focus, filtering, arrows, Enter conversion and Escape dismissal.");
+    for light in [false, true] {
+        cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+            crate::app_theme::apply(light, cx);
+            this.set_value("- [ ] First task\n- [x] Second task".into(), w, cx);
+        })).unwrap();
+        frame(handle, cx);
+        let first_id = editor.read(cx).document.blocks[0].id.clone();
+        let checkbox = editor.read(cx).inputs[&first_id].checkbox.clone().unwrap();
+        let task_point = |cx: &App| bounds(&first_id, cx).origin + point(px(66.), px(4. + editor.read(cx).font_size * 0.8));
+        let point = task_point(cx);
+        down(handle, point, cx);
+        up(handle, point, cx);
+        frame(handle, cx);
+        assert!(checkbox.read(cx).checked());
+        assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Task(true));
+        assert!(editor.read(cx).value().starts_with("- [x] First task"));
+        assert!(editor.read(cx).text_selection.is_none(), "checkbox clicks must not select document text");
+        cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| this.history(false, w, cx))).unwrap();
+        frame(handle, cx);
+        assert!(!checkbox.read(cx).checked(), "undo must restore the component state");
+        cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| this.history(true, w, cx))).unwrap();
+        frame(handle, cx);
+        assert!(checkbox.read(cx).checked(), "redo must restore the component state");
+        // Keep the same component while the block moves to a different index.
+        cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+            this.document.blocks.swap(0, 1);
+            this.changed(w, cx);
+        })).unwrap();
+        frame(handle, cx);
+        let point = task_point(cx);
+        down(handle, point, cx);
+        up(handle, point, cx);
+        frame(handle, cx);
+        assert_eq!(editor.read(cx).document.blocks[0].kind, Kind::Task(true));
+        assert_eq!(editor.read(cx).document.blocks[1].kind, Kind::Task(false), "toggle must follow block identity after reordering");
+        event(handle, PlatformInput::KeyDown(KeyDownEvent { keystroke: Keystroke::parse("space").unwrap(), is_held: false }), cx);
+        frame(handle, cx);
+        assert_eq!(editor.read(cx).document.blocks[1].kind, Kind::Task(true), "Space must toggle the focused checkbox");
+        assert_eq!(editor.read(cx).document.blocks[1].text, "First task", "checkbox keyboard activation must not edit the task text");
+        cx.update_window(handle, |_, w, cx| editor.update(cx, |this, cx| {
+            this.document.blocks[1].kind = Kind::Paragraph;
+            this.changed(w, cx);
+        })).unwrap();
+        assert!(editor.read(cx).inputs[&first_id].checkbox.is_none(), "conversion must remove checkbox state and subscription");
+    }
+    // A remote insertion must preserve the native input, focus and local undo origin.
+    let seed=sparkpad_sync::Document::new(101);
+    seed.set_text("body","Hello 🌱 world\n\n- [ ] Task");
+    let remote=sparkpad_sync::Document::load(102,&seed.state()).unwrap();
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{
+        this.set_value("Hello 🌱 world\n\n- [ ] Task".into(),w,cx);
+        this.bind_shared_document(&seed.state()).unwrap();
+        this.checkpoint(cx);this.document.blocks[0].edit("Hello 🌱 brave world".into());this.changed(w,cx);
+        this.select_block(this.document.blocks[0].id.clone(),w,cx);
+    })).unwrap();
+    let block_id=editor.read(cx).document.blocks[0].id.clone();
+    let input=editor.read(cx).inputs[&block_id].state.clone();
+    cx.update_window(handle,|_,w,cx|input.update(cx,|input,cx|{input.focus(w,cx);input.set_byte_selection(12..12,cx);})).unwrap();
+    remote.set_text("body","Remote introduction\n\nHello 🌱 world\n\n- [x] Task");
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.apply_shared_state(&remote.state(),w,cx).unwrap())).unwrap();
+    assert_eq!(editor.read(cx).document.blocks.iter().find(|b|b.text=="Hello 🌱 brave world").unwrap().id,block_id);
+    assert_eq!(editor.read(cx).inputs[&block_id].state.entity_id(),input.entity_id());
+    assert!(editor.read(cx).value().contains("Hello 🌱 brave world"));
+    assert!(editor.read(cx).value().contains("- [x] Task"));
+    cx.update_window(handle,|_,w,cx|{
+        assert!(input.read(cx).focus_handle(cx).is_focused(w));
+        editor.update(cx,|this,cx|this.history(false,w,cx));
+    }).unwrap();
+    assert!(editor.read(cx).value().contains("Remote introduction"));
+    assert!(editor.read(cx).value().contains("Hello 🌱 world"));
+    assert!(!editor.read(cx).value().contains("brave"));
+    assert!(editor.read(cx).value().contains("- [x] Task"));
+    // Image geometry and Markdown width survive resize/undo; tables preserve source when edited.
+    let root=std::env::temp_dir().join(format!("sparkpad-image-native-{}",uuid::Uuid::new_v4()));
+    let url=crate::document_images::store(&root,"svg",b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\" height=\"450\"><rect width=\"800\" height=\"450\" fill=\"#a58adf\"/></svg>").unwrap();
+    let source=format!("Before\n\n![Caption]({url})\n\n| Name | Value |\n| :--- | ---: |\n| **Example** | 10 |\n\nAfter");
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{this.set_asset_directory(root.clone());this.set_value(source.clone(),w,cx);})).unwrap();
+    frame(handle,cx);
+    let image_id=editor.read(cx).document.blocks.iter().find(|b|matches!(b.kind,Kind::Image{..})).unwrap().id.clone();
+    let table_id=editor.read(cx).document.blocks.iter().find(|b|b.kind==Kind::Table).unwrap().id.clone();
+    let geometry=editor.read(cx).row_bounds.borrow()[&image_id];
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{
+        this.checkpoint(cx);this.resizing_image=Some(image_id.clone());
+        let event=MouseMoveEvent{position:point(geometry.left()+px(58.)+(geometry.size.width-px(74.))*0.5,geometry.top()),..Default::default()};
+        assert!(this.resize_image(&event,w,cx));this.resizing_image=None;
+    })).unwrap();
+    let image=editor.read(cx).document.blocks.iter().find(|b|b.id==image_id).unwrap();
+    assert!(matches!(&image.kind,Kind::Image{title,..}if crate::blocks::image_width(title.as_deref())==50));
+    assert!(image.markdown().contains("sparkpad-width=50"));
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.history(false,w,cx))).unwrap();
+    assert_eq!(editor.read(cx).value().as_ref(),source);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{let index=this.document.blocks.iter().position(|b|b.id==table_id).unwrap();this.activate(index,0,w,cx);})).unwrap();frame(handle,cx);
+    assert_eq!(editor.read(cx).value().as_ref(),source,"viewing and editing tables must preserve all Markdown");
+    // Edit actual native table cells; keyboard navigation and structural operations share document undo.
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.focus_table_cell(&table_id,1,0,w,cx))).unwrap();frame(handle,cx);
+    event(handle,PlatformInput::KeyDown(KeyDownEvent{keystroke:Keystroke::parse("cmd-a").unwrap(),is_held:false}),cx);
+    assert!(editor.read(cx).text_selection.is_none(),"select-all within a table must stay within the focused cell");
+    let cell=editor.read(cx).tables[&table_id].cells[&(1,0)].state.clone();
+    assert_eq!(cell.read(cx).selection_range(),0.."Example".len());
+    cx.update_window(handle,|_,w,cx|cell.update(cx,|s,cx|{s.set_byte_selection(0..s.value().len(),cx);s.replace_text_in_range(None,"Café 🌱",w,cx);})).unwrap();frame(handle,cx);
+    assert!(editor.read(cx).value().contains("**Café 🌱**"));assert!(editor.read(cx).value().contains("| :--- | ---: |"));assert!(editor.read(cx).value().contains("| 10 |"));
+    event(handle,PlatformInput::KeyDown(KeyDownEvent{keystroke:Keystroke::parse("tab").unwrap(),is_held:false}),cx);
+    cx.update_window(handle,|_,w,cx|assert!(editor.read(cx).tables[&table_id].cells[&(1,1)].state.read(cx).focus_handle(cx).is_focused(w))).unwrap();
+    event(handle,PlatformInput::KeyDown(KeyDownEvent{keystroke:Keystroke::parse("enter").unwrap(),is_held:false}),cx);
+    assert_eq!(editor.read(cx).tables[&table_id].model.rows.len(),3);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{this.table_structure(&table_id,TableChange::AddColumn,w,cx);})).unwrap();frame(handle,cx);
+    assert_eq!(editor.read(cx).tables[&table_id].model.align.len(),3);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.table_history(false,&table_id,2,1,w,cx))).unwrap();frame(handle,cx);
+    assert_eq!(editor.read(cx).tables[&table_id].model.align.len(),2);
+    event(handle,PlatformInput::KeyDown(KeyDownEvent{keystroke:Keystroke::parse("cmd-shift-z").unwrap(),is_held:false}),cx);
+    assert_eq!(editor.read(cx).tables[&table_id].model.align.len(),3);
+    event(handle,PlatformInput::KeyDown(KeyDownEvent{keystroke:Keystroke::parse("cmd-z").unwrap(),is_held:false}),cx);
+    assert_eq!(editor.read(cx).tables[&table_id].model.align.len(),2);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.table_structure(&table_id,TableChange::RemoveRow(2),w,cx))).unwrap();
+    assert_eq!(editor.read(cx).tables[&table_id].model.rows.len(),2);
+    println!("Native visual tables verified: formatted Unicode cell edits, preserved neighbors/alignment, Tab, Enter adds row, add column, structural undo and remove row.");
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{this.active=None;this.focus_handle.focus(w);cx.notify();})).unwrap();frame(handle,cx);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{
+        this.set_value("Before After".into(),w,cx);this.activate(0,7,w,cx);
+        let image=Image::from_bytes(ImageFormat::Png,include_bytes!("../assets/app/icon.png").to_vec());
+        cx.write_to_clipboard(ClipboardItem::new_image(&image));assert!(this.paste_clipboard(false,w,cx));
+        assert!(this.document.blocks.iter().any(|b|matches!(b.kind,Kind::Image{..})),"clipboard image must become its own block");
+        assert!(this.value().starts_with("Before "));assert!(this.value().ends_with("After"));
+        this.history(false,w,cx);assert_eq!(this.value().as_ref(),"Before After");
+    })).unwrap();
+    // Virtualization must preserve the whole model, keyboard focus and history.
+    let large=(0..1000).map(|i|format!("Paragraph {i}: **café** and ideas 🌱.")).collect::<Vec<_>>().join("\n\n");
+    let virtual_scroll=ScrollHandle::new();
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{this.set_scroll_handle(virtual_scroll.clone());this.set_value(large.clone(),w,cx);})).unwrap();
+    for _ in 0..3{frame(handle,cx);}
+    assert_eq!(editor.read(cx).document.blocks.len(),1000);
+    assert!(editor.read(cx).inputs.len()<100,"a large page must not create every native field");
+    assert!(editor.read(cx).row_bounds.borrow().len()<100,"only viewport rows should render");
+    assert_eq!(editor.read(cx).value().as_ref(),large);
+    virtual_scroll.set_offset(point(px(0.),px(-12000.)));for _ in 0..3{frame(handle,cx);}
+    assert!(editor.read(cx).row_bounds.borrow().len()<100);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.activate(999,0,w,cx))).unwrap();for _ in 0..3{frame(handle,cx);}
+    let last=editor.read(cx).state(999);
+    cx.update_window(handle,|_,w,cx|last.update(cx,|s,cx|s.replace_text_in_range(Some(0..0),"Last 🌱 ",w,cx))).unwrap();frame(handle,cx);
+    assert!(editor.read(cx).value().contains("Last 🌱 Paragraph 999"));
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.history(false,w,cx))).unwrap();frame(handle,cx);
+    assert_eq!(editor.read(cx).value().as_ref(),large);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.select_document(w,cx))).unwrap();frame(handle,cx);
+    assert_eq!(editor.read(cx).text_selection.unwrap().ordered(),((0,0),(999,editor.read(cx).document.blocks[999].text.len())));
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{this.clear_selection(cx);this.set_font_size(28.,cx);this.read_mode(w,cx);})).unwrap();for _ in 0..3{frame(handle,cx);}
+    assert_eq!(editor.read(cx).value().as_ref(),large);
+    let big_table="| Name | Value |\n| --- | --- |\n".to_owned()+(0..400).map(|i|format!("| Item {i} | {i} |\n")).collect::<String>().as_str();
+    virtual_scroll.set_offset(point(px(0.),px(0.)));
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|{this.set_font_size(22.,cx);this.set_value(big_table.clone(),w,cx);})).unwrap();for _ in 0..3{frame(handle,cx);}
+    let id=editor.read(cx).document.blocks[0].id.clone();assert!(editor.read(cx).tables[&id].row_heights.borrow().len()<80);
+    cx.update_window(handle,|_,w,cx|editor.update(cx,|this,cx|this.focus_table_cell(&id,400,1,w,cx))).unwrap();for _ in 0..3{frame(handle,cx);}
+    let cell=editor.read(cx).tables[&id].cells[&(400,1)].state.clone();
+    cx.update_window(handle,|_,w,cx|cell.update(cx,|s,cx|{s.set_byte_selection(0..s.value().len(),cx);s.replace_text_in_range(None,"Last cell",w,cx);})).unwrap();frame(handle,cx);
+    assert!(editor.read(cx).value().contains("| Item 399 | Last cell |"));
+    println!("Native virtualization verified: full Markdown, bounded fields/rows, scrolling, distant focus, Unicode editing, undo, document selection, font reflow and offscreen table-cell editing.");
+    std::fs::remove_dir_all(root).unwrap();
+    println!("Native images/tables verified: image import, proportional width, resize undo, table preview/edit and lossless Markdown.");
+    println!("Native collaborative editing verified: remote insertion, Unicode, checkbox, input identity, focus, and own undo preserving remote work.");
+    println!("Native empire-ui task checkboxes verified: click, keyboard, Markdown, undo/redo, reordered identity, conversion, and both themes.");
     cx.update_window(handle, |_, w, _| w.remove_window()).unwrap();
     println!("Native rich clipboard verified: standard HTML export, external formatted HTML paste, partial selections, Unicode, surrounding styles and undo.");
     println!("Native editor verified: drag/drop, toolbar, implicit insertion, bidirectional document selection, Cmd/Ctrl+A, formatting, native replacement, deletion and undo.");
@@ -3069,4 +3611,23 @@ mod tests {
             .collect();
         assert!(!predicate.eval_inner(&title, &title));
     }
+}
+
+#[cfg(test)]
+pub fn benchmark_edit(editor:&Entity<BlockEditor>,window:&mut Window,cx:&mut App){
+    editor.update(cx,|this,cx|{
+        if let Some(id)=this.document.blocks.iter().find(|b|b.kind==Kind::Table).map(|b|b.id.clone()){
+            this.focus_table_cell(&id,1,0,window,cx);let state=this.tables[&id].cells[&(1,0)].state.clone();
+            state.update(cx,|s,cx|s.replace_text_in_range(Some(0..0),"x",window,cx));
+            this.table_event(&id,1,0,&InputEvent::Change,window,cx);return;
+        }
+        let Some(index)=this.document.blocks.iter().position(|b|b.kind==Kind::Paragraph||matches!(b.kind,Kind::Code(_)))else{return};
+        if this.active.as_ref()!=Some(&this.document.blocks[index].id){this.activate(index,0,window,cx);}let state=this.state(index);
+        state.update(cx,|s,cx|s.replace_text_in_range(Some(0..0),"x",window,cx));
+        this.input_event(&this.document.blocks[index].id.clone(),&InputEvent::Change,window,cx);
+    });
+}
+#[cfg(test)]
+pub fn benchmark_counts(editor:&Entity<BlockEditor>,cx:&App)->serde_json::Value{
+    let s=editor.read(cx);serde_json::json!({"blocks":s.document.blocks.len(),"inputs":s.inputs.len(),"table_cells":s.tables.values().map(|t|t.cells.len()).sum::<usize>(),"measured_rows":s.row_bounds.borrow().len()})
 }

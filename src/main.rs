@@ -7,6 +7,8 @@ mod assets;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod block_editor;
 mod blocks;
+mod document_images;
+mod markdown_table;
 mod rich_clipboard;
 #[cfg(feature = "gui")]
 mod code_highlight;
@@ -18,18 +20,25 @@ mod macos;
 mod mcp;
 mod mcp_presence;
 mod store;
+mod sync_storage;
+mod sync_client;
 mod note_tree;
 mod sidebar_drag;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod ui;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod ui_motion;
+#[cfg(all(feature = "gui", target_os = "macos"))]
+mod sync_settings;
+
+#[cfg(all(test, feature = "gui", target_os = "macos"))]
+mod performance;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let mode = args.next();
     if mode.as_deref() == Some("--help") {
-        println!("Sparkpad\n  sparkpad           Minimal native macOS notes\n  sparkpad mcp       MCP server over stdio\n  sparkpad db-path   Print SQLite location\n\nOverride storage with SPARKPAD_DB (INTERVIEW_COMPANION_DB is also supported).");
+        println!("Sparkpad\n  sparkpad           Minimal native macOS notes\n  sparkpad mcp       MCP server over stdio\n  sparkpad db-path   Print SQLite location\n  sparkpad sync      connect URL | disconnect | status | run\n\nOverride storage with SPARKPAD_DB (INTERVIEW_COMPANION_DB is also supported).");
         return Ok(());
     }
     let path = store::default_path()?;
@@ -38,8 +47,10 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let db = store::Store::open(&path)?;
+    let _sync_worker = sync_client::start(&path);
     match mode.as_deref() {
         Some("mcp") => mcp::serve(db),
+        Some("sync") => sync_client::cli(&path,args.collect()),
         None => {
             #[cfg(all(feature = "gui", target_os = "macos"))]
             {

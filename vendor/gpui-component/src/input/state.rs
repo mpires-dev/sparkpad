@@ -268,12 +268,17 @@ impl LastLayout {
     }
 }
 
+/// A syntax provider receives only the visible UTF-8 byte range. The caller
+/// retains the full text/tree, so multiline grammar context remains available.
+pub type InlineHighlightProvider = Box<dyn FnMut(&Rope, Range<usize>, std::sync::Arc<crate::highlighter::HighlightTheme>) -> Vec<(Range<usize>, HighlightStyle)>>;
+
 /// InputState to keep editing state of the [`super::Input`].
 pub struct InputState {
     pub(super) focus_handle: FocusHandle,
     pub(super) mode: InputMode,
     pub(super) text: Rope,
     pub(super) inline_highlights: Vec<(Range<usize>, HighlightStyle)>,
+    pub(super) inline_highlight_provider: Option<InlineHighlightProvider>,
     pub(super) inline_font_ranges: Vec<(Range<usize>, SharedString)>,
     pub(super) block_mode: bool,
     pub(super) text_wrapper: TextWrapper,
@@ -396,6 +401,7 @@ impl InputState {
             focus_handle: focus_handle.clone(),
             text: "".into(),
             inline_highlights: Vec::new(),
+            inline_highlight_provider: None,
             inline_font_ranges: Vec::new(),
             block_mode: false,
             text_wrapper: TextWrapper::new(text_style.font(), window.rem_size(), None),
@@ -1672,12 +1678,15 @@ impl InputState {
     /// The offset is the UTF-8 offset.
     /// App-local rich block editing. Styles must cover the entire UTF-8 text.
     pub fn block_mode(mut self, enabled: bool) -> Self { self.block_mode = enabled; self }
-    pub fn set_inline_highlights(&mut self, styles: Vec<(Range<usize>, HighlightStyle)>, cx: &mut Context<Self>) { self.inline_highlights = styles; cx.notify(); }
+    /// Supply viewport syntax colors without constructing offscreen style spans.
+    pub fn set_inline_highlight_provider(&mut self,provider:Option<InlineHighlightProvider>,cx:&mut Context<Self>){
+        self.inline_highlight_provider=provider;self.inline_highlights.clear();self.text_wrapper.invalidate_rich_wrap();cx.notify();
+    }
+    pub fn set_inline_highlights(&mut self, styles: Vec<(Range<usize>, HighlightStyle)>, cx: &mut Context<Self>) { if self.inline_highlights != styles { self.inline_highlights = styles; self.text_wrapper.invalidate_rich_wrap(); cx.notify(); } }
     /// Override the font of complete inline highlight runs, using UTF-8 ranges.
     pub fn set_inline_font_ranges(&mut self, mut fonts: Vec<(Range<usize>, SharedString)>, cx: &mut Context<Self>) {
         fonts.sort_by_key(|(range, _)| range.start);
-        self.inline_font_ranges = fonts;
-        cx.notify();
+        if self.inline_font_ranges != fonts {self.inline_font_ranges = fonts;self.text_wrapper.invalidate_rich_wrap();cx.notify();}
     }
     pub fn selection_range(&self) -> Range<usize> { self.selected_range.start..self.selected_range.end }
     /// Hit testing for a document selection spanning several native inputs.

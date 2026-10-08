@@ -61,6 +61,7 @@ pub(super) struct TextWrapper {
     pub(super) lines: Vec<LineItem>,
 
     _initialized: bool,
+    rich_dirty: bool,
 }
 
 #[allow(unused)]
@@ -75,12 +76,13 @@ impl TextWrapper {
             longest_row: LongestRow::default(),
             lines: Vec::new(),
             _initialized: false,
+            rich_dirty: true,
         }
     }
 
     #[inline]
     pub(super) fn set_default_text(&mut self, text: &Rope) {
-        self.text = text.clone();
+        self.text = text.clone();self.rich_dirty=true;
     }
 
     /// Get the total number of lines including wrapped lines.
@@ -162,6 +164,7 @@ impl TextWrapper {
     ) where
         F: FnMut(&str, Pixels) -> Vec<gpui::Boundary>,
     {
+        self.rich_dirty = true;
         // Remove the old changed lines.
         let start_row = self.text.offset_to_point(range.start).row;
         let start_row = start_row.min(self.lines.len().saturating_sub(1));
@@ -243,9 +246,14 @@ impl TextWrapper {
         self.update(text, &(0..text.len()), &text, cx);
     }
 
+    pub(super) fn needs_rich_wrap(&self) -> bool { self.rich_dirty }
+    pub(super) fn invalidate_rich_wrap(&mut self) { self.rich_dirty = true; }
     /// App-local rich input wrapping uses the actual fonts of each run.
     pub(super) fn wrap_rich_text(&mut self, text: &Rope, runs: &[gpui::TextRun], system: &gpui::WindowTextSystem) {
         if text.len()==0 || runs.iter().map(|r|r.len).sum::<usize>()!=text.len() {return;}
+        // Color-only syntax spans do not change line breaks. The plain wrapper
+        // already has exact metrics; shaping the entire document again is wasted.
+        if runs.iter().all(|run|run.font==self.font) {self.rich_dirty=false;return;}
         let Ok(shaped)=system.shape_text(text.to_string().into(),self.font_size,runs,self.wrap_width,None) else {return;};
         if shaped.len()!=self.lines.len() {return;}
         for (line,layout) in self.lines.iter_mut().zip(shaped.iter()) {
@@ -256,7 +264,7 @@ impl TextWrapper {
             }
             wrapped.push(start..line.len());line.wrapped_lines=wrapped;
         }
-        self.soft_lines=self.lines.iter().map(|l|l.lines_len()).sum();
+        self.soft_lines=self.lines.iter().map(|l|l.lines_len()).sum();self.rich_dirty=false;
     }
 
     /// Return display point (with soft wrap) from the given byte offset in the text.

@@ -496,6 +496,7 @@ impl TextElement {
         state: &InputState,
         line_height: Pixels,
         input_height: Pixels,
+        clipped_top: Pixels,
     ) -> (Range<usize>, Pixels) {
         // Add extra rows to avoid showing empty space when scroll to bottom.
         let extra_rows = 1;
@@ -509,7 +510,7 @@ impl TextElement {
             deferred_scroll_offset.y
         } else {
             state.scroll_handle.offset().y
-        };
+        } - clipped_top;
 
         let mut visible_range = 0..total_lines;
         let mut line_bottom = px(0.);
@@ -756,12 +757,19 @@ impl TextElement {
         visible_byte_range: Range<usize>,
         cx: &mut App,
     ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+        if self.state.read(cx).inline_highlight_provider.is_some(){
+            return self.state.update(cx,|state,cx|{
+                let provider=state.inline_highlight_provider.as_mut()?;
+                Some(provider(&state.text,visible_byte_range,cx.theme().highlight_theme.clone()))
+            });
+        }
         let state = self.state.read(cx);
         let text = &state.text;
         let is_multi_line = state.mode.is_multi_line();
         if !state.inline_highlights.is_empty() {
             // Clip runs to the shaped viewport. Invalid/stale spans fall back to plain text.
-            let runs: Vec<_> = state.inline_highlights.iter().filter_map(|(range, style)| {
+            let first=state.inline_highlights.partition_point(|(range,_)|range.end<=visible_byte_range.start);
+            let runs: Vec<_> = state.inline_highlights[first..].iter().take_while(|(range,_)|range.start<visible_byte_range.end).filter_map(|(range, style)| {
                 let start = range.start.max(visible_byte_range.start);
                 let end = range.end.min(visible_byte_range.end);
                 (start < end).then_some((start..end, *style))
@@ -951,7 +959,7 @@ impl Element for TextElement {
         self.state.update(cx, |state, cx| {
             state.text_wrapper.set_font(font, text_size, cx);
             state.text_wrapper.prepare_if_need(&state.text, cx);
-            if !state.inline_highlights.is_empty() {
+            if !state.inline_highlights.is_empty() && state.text_wrapper.needs_rich_wrap() {
                 let text_style=window.text_style();
                 let runs: Vec<_>=state.inline_highlights.iter().filter(|(r,_)|!r.is_empty()).map(|(r,s)|text_style.clone().highlight(*s).to_run(r.len())).collect();
                 let previous_rows=state.mode.rows();
@@ -964,8 +972,13 @@ impl Element for TextElement {
         let state = self.state.read(cx);
         let line_height = window.line_height();
 
+        // Auto-growing fields live in a document scroll area. Their own height may be
+        // thousands of lines, so use the ancestor clip rather than laying out all of them.
+        let mask=window.content_mask().bounds;
+        let clipped_top=(mask.top()-bounds.top()).max(px(0.)).min(bounds.size.height);
+        let clipped_height=(bounds.bottom().min(mask.bottom())-bounds.top().max(mask.top())).max(line_height);
         let (visible_range, visible_top) =
-            self.calculate_visible_range(&state, line_height, bounds.size.height);
+            self.calculate_visible_range(&state, line_height, clipped_height, clipped_top);
         let visible_start_offset = state.text.line_start_offset(visible_range.start);
         let visible_end_offset = state
             .text

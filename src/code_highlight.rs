@@ -113,6 +113,7 @@ pub struct CodeHighlight {
     parser: Option<SyntaxHighlighter>,
     theme: Option<Arc<HighlightTheme>>,
     styles: Vec<(Range<usize>, HighlightStyle)>,
+    range:Range<usize>,
 }
 fn end_point(text: &str) -> tree_sitter::Point {
     tree_sitter::Point::new(
@@ -120,13 +121,28 @@ fn end_point(text: &str) -> tree_sitter::Point {
         text.rsplit('\n').next().unwrap_or("").len(),
     )
 }
+// Tree-sitter can reuse unchanged subtrees only if the edit describes the
+// actual changed bytes. Keep both endpoints on UTF-8 character boundaries.
+fn minimal_edit(old:&str,new:&str)->tree_sitter::InputEdit {
+    let mut start=old.bytes().zip(new.bytes()).take_while(|(a,b)|a==b).count();
+    while !old.is_char_boundary(start)||!new.is_char_boundary(start){start-=1;}
+    let mut suffix=old.as_bytes()[start..].iter().rev().zip(new.as_bytes()[start..].iter().rev()).take_while(|(a,b)|a==b).count();
+    while !old.is_char_boundary(old.len()-suffix)||!new.is_char_boundary(new.len()-suffix){suffix-=1;}
+    let old_end=old.len()-suffix;let new_end=new.len()-suffix;
+    tree_sitter::InputEdit{start_byte:start,old_end_byte:old_end,new_end_byte:new_end,start_position:end_point(&old[..start]),old_end_position:end_point(&old[..old_end]),new_end_position:end_point(&new[..new_end])}
+}
 impl CodeHighlight {
+    #[cfg(test)]
     pub fn styles(
         &mut self,
         language: &str,
         text: &str,
         theme: Arc<HighlightTheme>,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
+        self.styles_in_range(language,text,0..text.len(),theme)
+    }
+    pub fn styles_in_range(&mut self,language:&str,text:&str,range:Range<usize>,theme:Arc<HighlightTheme>)->Vec<(Range<usize>,HighlightStyle)>{
+        assert!(range.start<=range.end&&range.end<=text.len()&&text.is_char_boundary(range.start)&&text.is_char_boundary(range.end));
         prepare_languages();
         let language = canonical(language);
         let language_changed = self.language != language;
@@ -137,36 +153,24 @@ impl CodeHighlight {
         }
         if language_changed || text_changed {
             if let Some(parser) = &mut self.parser {
-                // Describe a complete replacement with correct UTF-8 byte offsets and points.
-                // The engine still reuses the parser; unchanged renders do no parsing at all.
                 let old = if language_changed { "" } else { &self.text };
-                parser.update(
-                    Some(tree_sitter::InputEdit {
-                        start_byte: 0,
-                        old_end_byte: old.len(),
-                        new_end_byte: text.len(),
-                        start_position: tree_sitter::Point::new(0, 0),
-                        old_end_position: end_point(old),
-                        new_end_position: end_point(text),
-                    }),
-                    &Rope::from(text),
-                );
+                parser.update(Some(minimal_edit(old,text)),&Rope::from(text));
             }
             self.text = text.into();
         }
-        if language_changed || text_changed || self.theme.as_deref() != Some(theme.as_ref()) {
+        if language_changed || text_changed || self.range!=range || self.theme.as_deref() != Some(theme.as_ref()) {
             self.styles = self
                 .parser
                 .as_ref()
-                .map(|p| p.styles(&(0..text.len()), &theme))
+                .map(|p| p.styles(&range, &theme).into_iter().filter_map(|(r,style)|{let start=r.start.max(range.start);let end=r.end.min(range.end);(start<end).then_some((start..end,style))}).collect())
                 .unwrap_or_else(|| {
                     if text.is_empty() {
                         vec![]
                     } else {
-                        vec![(0..text.len(), HighlightStyle::default())]
+                        vec![(range.clone(), HighlightStyle::default())]
                     }
                 });
-            self.theme = Some(theme);
+            self.theme = Some(theme);self.range=range;
         }
         self.styles.clone()
     }
@@ -175,6 +179,29 @@ impl CodeHighlight {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn incremental_edit_preserves_unicode_boundaries_and_points(){
+        for (old,new) in [("","café 🌱"),("let café = 1;\nnext","let café = 2;\nnext"),("a🌱b","a🍃b"),("ab\ncafé","ab\ncafê"),("x",""),("same","same")]{
+            let e=minimal_edit(old,new);let mut rebuilt=old.to_owned();rebuilt.replace_range(e.start_byte..e.old_end_byte,&new[e.start_byte..e.new_end_byte]);assert_eq!(rebuilt,new);
+            assert_eq!(e.start_position,end_point(&old[..e.start_byte]));assert_eq!(e.new_end_position,end_point(&new[..e.new_end_byte]));
+        }
+        let e=minimal_edit("abc\ndef","abc\nXdef");assert_eq!((e.start_byte,e.old_end_byte,e.new_end_byte),(4,4,5));
+    }
+
+    #[test]
+    fn viewport_colors_match_full_parse_after_scrolling_and_unicode_edits(){
+        let theme=HighlightTheme::default_dark();let mut cache=CodeHighlight::default();
+        let source="/* a multiline\n comentário 🌱 that crosses the viewport */\nconst Card = () => <section title=\"café\">{`hello ${42}`}</section>;\n".repeat(40);
+        for text in [source.clone(),format!("// changed 🌱\n{source}")]{
+            let full=CodeHighlight::default().styles("tsx",&text,theme.clone());
+            for start in [0,text.find("comentário").unwrap(),text.find("title").unwrap(),text.len()-80]{
+                let end=text[start..].char_indices().nth(120).map(|(n,_)|start+n).unwrap_or(text.len());
+                let spans=cache.styles_in_range("tsx",&text,start..end,theme.clone());
+                assert_eq!(spans.iter().map(|(r,_)|r.len()).sum::<usize>(),end-start);
+                for (n,_)in text[start..end].char_indices(){let at=start+n;let a=full.iter().find(|(r,_)|r.contains(&at)).unwrap().1;let b=spans.iter().find(|(r,_)|r.contains(&at)).unwrap().1;assert_eq!(a,b,"viewport mismatch at {at}");}
+            }
+        }
+    }
     #[test]
     fn languages_highlight_unicode_edits_and_theme_switches() {
         let dark = HighlightTheme::default_dark();

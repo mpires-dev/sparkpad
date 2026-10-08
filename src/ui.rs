@@ -74,6 +74,7 @@ struct Panel {
     icon_picker: Entity<crate::icon_picker::IconPicker>,
     page_cover: Option<String>,
     db: Store,
+    sync_dialog: Option<Entity<crate::sync_settings::SyncSettings>>,
     notes: Vec<NoteSummary>,
     tree: NoteTree,
     #[cfg(test)]
@@ -165,7 +166,7 @@ impl Panel {
         let pinned = db.setting("always_on_top").ok().flatten().as_deref() != Some("false");
         let title =
             cx.new(|cx| empire_ui::input::single_line(window, cx).placeholder("Título da nota"));
-        let editor = cx.new(|cx| BlockEditor::new(window, cx));
+        let editor = cx.new(|cx| {let mut editor=BlockEditor::new(window,cx);editor.set_asset_directory(db.mcp_sessions_dir().with_extension("assets"));editor});
         let opacity = cx.new(|cx| Slider::new(opacity_value, cx).bounds(25., 100.).step(0.));
         let content_width = cx.new(|cx| Slider::new(content_width_value, cx).bounds(40., 100.).step(0.));
         let opacity_popover = slider_popover(opacity.clone(), "Opacidade", "iconoir/regular/droplet-half.svg", cx);
@@ -215,6 +216,7 @@ impl Panel {
             page_action: None, title_hovered: false, page_icon: None, page_cover: None,
             icon_picker,
             db,
+            sync_dialog: None,
             notes,
             tree,
             #[cfg(test)]
@@ -425,6 +427,10 @@ impl Panel {
             }
             async {}
         }));
+        #[cfg(not(test))]
+        if panel.db.setting("onboarding_completed").ok().flatten().is_none() && panel.notes.len()<=1 {
+            panel.open_sync_settings(true,window,cx);
+        }
         panel.focus_handle.focus(window);
         macos::configure(window, opacity_value / 100., pinned);
         macos::appearance(window,light_mode);
@@ -441,6 +447,23 @@ impl Panel {
         self.opacity_popover.update(cx, |_,cx| cx.notify());
         self.width_popover.update(cx, |_,cx| cx.notify());
         cx.notify();
+    }
+    fn open_sync_settings(&mut self,onboarding:bool,window:&mut Window,cx:&mut Context<Self>) {
+        let path=self.db.path.clone();
+        let dialog=cx.new(|cx|crate::sync_settings::SyncSettings::new(path,onboarding,window,cx));
+        cx.subscribe_in(&dialog,window,|this,_,_:&crate::sync_settings::Closed,_,cx| {this.sync_dialog=None;cx.notify();}).detach();
+        self.sync_dialog=Some(dialog);cx.notify();
+    }
+    fn apply_shared_note(&mut self,note:Note,window:&mut Window,cx:&mut Context<Self>) {
+        if let Ok(Some(state))=crate::sync_storage::editor_state_at(&self.db,&note.id,note.revision) {
+            self.editor.update(cx,|editor,cx| {let _=editor.apply_shared_state(&state,window,cx);});
+        }
+        if self.title.read(cx).value().as_ref()!=note.title {
+            let old=self.title.read(cx).value().to_string();let range=self.title.read(cx).selection_range();
+            let a=sparkpad_sync::transform_cursor(&old,&note.title,range.start);let b=sparkpad_sync::transform_cursor(&old,&note.title,range.end);
+            self.title.update(cx,|title,cx| {title.set_value(note.title.clone(),window,cx);title.set_byte_selection(a.min(b)..a.max(b),cx);});
+        }
+        self.selected=Some(note);self.dirty=false;self.error=None;cx.notify();
     }
     fn changed(&mut self, cx: &mut Context<Self>) {
         // InputState emits deferred Change events even for set_value(). Compare content
@@ -459,6 +482,9 @@ impl Panel {
             .update(cx, |s, cx| s.set_value(note.title.clone(), window, cx));
         self.editor
             .update(cx, |s, cx| s.set_value(note.markdown.clone(), window, cx));
+        if let Ok(Some(state))=crate::sync_storage::editor_state_at(&self.db,&note.id,note.revision) {
+            self.editor.update(cx,|editor,_| {let _=editor.bind_shared_document(&state);});
+        }
         self.dirty = false;
         self.error = None;
         self.reader_scroll.set_offset(point(px(0.), px(0.)));
@@ -478,16 +504,16 @@ impl Panel {
         };
         let title = self.title.read(cx).value();
         let text = self.editor.read(cx).value();
-        match self.db.update(
-            &note.id,
-            if title.trim().is_empty() {
-                "Sem título"
-            } else {
-                &title
-            },
-            &text,
-            note.revision,
-        ) {
+        let result=if crate::sync_storage::enabled(&self.db) && self.editor.read(cx).has_shared_document() {
+            crate::sync_storage::vector(&self.db,&note.id).and_then(|vector| {
+                self.editor.update(cx,|editor,_|editor.shared_update(&title,&vector)).and_then(|update| {
+                    crate::sync_storage::save_editor_update(&self.db,&note.id,&update.unwrap_or_default())
+                })
+            })
+        } else {
+            self.db.update(&note.id,if title.trim().is_empty() {"Sem título"} else {&title},&text,note.revision)
+        };
+        match result {
             Ok(note) => {
                 self.selected = Some(note);
                 self.refresh_tree();
@@ -1164,11 +1190,19 @@ impl Panel {
         if macos::take_toggle() {self.visibility(!self.visible || macos::is_minimized(window),window,cx);}
         if self.dirty
             && self.error.is_none()
-            && self.last_edit.elapsed() > Duration::from_millis(350)
+            && self.last_edit.elapsed() > Duration::from_millis(if crate::sync_storage::enabled(&self.db) {80} else {350})
         {
             self.save(cx);
         }
-        if self.last_sync.elapsed() < Duration::from_millis(500) {
+        if crate::sync_storage::enabled(&self.db) {
+            if let Some(note)=self.selected.clone() {
+                if !self.editor.read(cx).has_shared_document() {
+                    if let Ok(Some(state))=crate::sync_storage::editor_state_at(&self.db,&note.id,note.revision) {self.editor.update(cx,|editor,_| {let _=editor.bind_shared_document(&state);});}
+                }
+                if !self.dirty && self.editor.read(cx).value().as_ref()!=note.markdown {self.apply_shared_note(note,window,cx);}
+            }
+        }
+        if self.last_sync.elapsed() < Duration::from_millis(if crate::sync_storage::enabled(&self.db) {100} else {500}) {
             return;
         }
         self.last_sync = Instant::now();
@@ -1246,9 +1280,8 @@ impl Panel {
                     self.sync_tree_motion(false);
                     cx.notify();
                 }
-                if self.dirty || self.error.is_some() {
-                    return;
-                }
+                if self.dirty && crate::sync_storage::enabled(&self.db) {self.save(cx);}
+                if self.dirty || self.error.is_some() {return;}
                 let selected_id = self.db.setting("selected_note").ok().flatten();
                 let desired = self
                     .notes
@@ -1267,7 +1300,9 @@ impl Panel {
                 };
                 if requires_load {
                     if let Some(note) = desired.and_then(|n| self.db.get(&n.id).ok()) {
-                        self.load(note, window, cx);
+                        if crate::sync_storage::enabled(&self.db) && self.selected.as_ref().is_some_and(|selected|selected.id==note.id) {
+                            self.apply_shared_note(note,window,cx);
+                        } else {self.load(note,window,cx);}
                     } else {
                         self.selected = None;
                         cx.notify();
@@ -1412,6 +1447,11 @@ impl Render for Panel {
             .border_color(neutral(0x303030))
             .child(self.opacity_popover.clone())
             .child(self.width_popover.clone())
+            .child(Button::icon("sync-settings-button","iconoir/regular/cloud-sync.svg").size(ButtonSize::IconSm).variant(ButtonVariant::Ghost)
+                .on_click(cx.listener(|this,_,window,cx|this.open_sync_settings(false,window,cx))))
+            .child(div().text_xs().text_color(neutral(0x999999)).child(match self.db.setting("sync_status").ok().flatten().as_deref() {
+                Some("connected")=>"Synced",Some("connecting")=>"Connecting…",Some("offline")=>"Offline · saved locally",_=>"Local",
+            }))
             .child(div().relative().flex_none().child(self.font_menu.clone()).children(font_measure))
             .child(div().relative().flex_none().child(Button::icon("toggle-theme", if self.light_mode {
                     "iconoir/regular/half-moon.svg"
@@ -1639,6 +1679,7 @@ impl Render for Panel {
             .text_color(neutral(0xeeeeee))
             .border_1()
             .border_color(neutral(0x414141))
+            .children(self.sync_dialog.as_ref().map(|dialog|deferred(div().absolute().inset_0().flex().items_center().justify_center().p_4().occlude().bg(rgba(0x00000088)).child(dialog.clone())).with_priority(10)))
             .on_action(cx.listener(|this, _: &QuitApp, _, cx| {
                 if this.save(cx) {
                     cx.quit();
@@ -2550,4 +2591,97 @@ pub fn verify_native_hover_async(cx: &mut App) {
             crate::block_editor::verify_native_selection_async(cx);
         }).unwrap();
     }).detach();
+}
+
+/// Reproducible performance run through the production Panel, with synthetic data.
+#[cfg(test)]
+pub fn benchmark_native(output:String,startup:Instant,cx:&mut App){
+    use crate::performance::{ms,stats};use serde_json::json;use std::{rc::Rc,cell::RefCell};
+    let fixtures=crate::performance::fixtures();let path=std::env::temp_dir().join(format!("sparkpad-performance-{}.sqlite3",uuid::Uuid::new_v4()));
+    let db=Store::open(&path).unwrap();db.set_setting("onboarding_completed","true").unwrap();
+    let mut ids=Vec::new();for (name,body)in &fixtures{ids.push(db.create(name,body).unwrap().id);}
+    db.set_setting("selected_note",&ids[0]).unwrap();let mut panel=None;
+    let open=Instant::now();
+    let handle=cx.open_window(WindowOptions{show:true,focus:true,window_bounds:Some(WindowBounds::Windowed(Bounds::new(point(px(50.),px(50.)),size(px(1100.),px(760.))))),titlebar:Some(TitlebarOptions{title:Some("Sparkpad performance — synthetic data".into()),..Default::default()}),..Default::default()},|w,cx|{
+        let p=cx.new(|cx|Panel::new(db,w,cx));panel=Some(p.clone());cx.new(|cx|Root::new(p,w,cx))
+    }).unwrap();let handle:AnyWindowHandle=handle.into();let panel=panel.unwrap();
+    cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();
+    let initialization=ms(open);let start_to_scene=ms(startup);let mut rows=Vec::new();
+    let pick=std::env::var("SPARKPAD_PERF_CASES").ok();
+    for ((name,source),id) in fixtures.iter().zip(&ids){
+        if pick.as_ref().is_some_and(|s|!s.split(',').any(|p|p==name)){continue;}
+        eprintln!("PERF starting {name}: {} bytes",source.len());
+        let mut parse=Vec::new();for _ in 0..7{let t=Instant::now();std::hint::black_box(crate::blocks::Document::parse(source));parse.push(ms(t));}
+        let mut read=Vec::new();for _ in 0..21{let t=Instant::now();std::hint::black_box(panel.read(cx).db.get(id).unwrap());read.push(ms(t));}
+        let mut load=Vec::new();let mut transition=Vec::new();
+        for _ in 0..7{
+            cx.update_window(handle,|_,w,cx|panel.update(cx,|p,cx|p.select(&ids[0],w,cx))).unwrap();cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();
+            let t=Instant::now();cx.update_window(handle,|_,w,cx|panel.update(cx,|p,cx|p.select(id,w,cx))).unwrap();load.push(ms(t));cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();transition.push(ms(t));
+        }
+        let mut scroll=Vec::new();let mut hover=Vec::new();let mut edit=Vec::new();
+        for i in 0..50{let t=Instant::now();cx.update_window(handle,|_,w,cx|{let _=w.dispatch_event(PlatformInput::ScrollWheel(ScrollWheelEvent{position:point(px(800.),px(400.)),delta:ScrollDelta::Pixels(point(px(0.),px(if i<25{-120.}else{120.}))),touch_phase:TouchPhase::Moved,..Default::default()}),cx);}).unwrap();cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();scroll.push(ms(t));}
+        cx.update_window(handle,|_,_,cx|panel.read(cx).editor_scroll.set_offset(point(px(0.),px(0.)))).unwrap();cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();
+        for i in 0..50{let t=Instant::now();cx.update_window(handle,|_,w,cx|{let _=w.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent{position:point(px(420.+(i%2)as f32*70.),px(240.+(i%4)as f32*45.)),..Default::default()}),cx);}).unwrap();cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();hover.push(ms(t));}
+        let editor=panel.read(cx).editor.clone();
+        for _ in 0..20{let t=Instant::now();cx.update_window(handle,|_,w,cx|crate::block_editor::benchmark_edit(&editor,w,cx)).unwrap();cx.update_window(handle,|_,w,cx|w.draw(cx).clear()).unwrap();edit.push(ms(t));}
+        let counts=crate::block_editor::benchmark_counts(&editor,cx);
+        let row=json!({"case":name,"bytes":source.len(),"counts":counts,"parse":stats(parse),"sqlite_read":stats(read),"load":stats(load),"transition_to_scene":stats(transition),"scroll_cpu_scene":stats(scroll),"hover_cpu_scene":stats(hover),"edit_cpu_scene":if edit.is_empty(){serde_json::Value::Null}else{stats(edit)}});
+        eprintln!("PERF result {row}");rows.push(row);
+    }
+    // Native display-link callbacks include the production render/present path. Warm up first.
+    cx.update_window(handle,|_,w,cx|panel.update(cx,|p,cx|p.select(&ids[1],w,cx))).unwrap();
+    let mut report=json!({"version":2,"window":[1100,760],"profile":"dev opt-level=3 dependencies=2 debug=0 incremental=0","initialization_to_scene_ms":initialization,"process_code_start_to_scene_ms":start_to_scene,"cases":rows});
+    std::fs::write(&output,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    cx.activate(true);
+    let native_state=cx.update_window(handle,|_,w,_|{
+        w.activate_window();macos::visible(w,true);
+        // Start AppKit's layer display cycle before collecting display-link callbacks.
+        use raw_window_handle::{HasWindowHandle,RawWindowHandle};
+        use objc::{msg_send,sel,sel_impl};
+        if let RawWindowHandle::AppKit(h)=w.window_handle().unwrap().as_raw(){unsafe{
+            let view=h.ns_view.as_ptr() as cocoa::base::id;
+            let _:()=msg_send![view,setNeedsDisplay:cocoa::base::YES];
+            let layer:cocoa::base::id=msg_send![view,layer];let _:()=msg_send![layer,setNeedsDisplay];
+            let win:cocoa::base::id=msg_send![view,window];let visible:cocoa::base::BOOL=msg_send![win,isVisible];let occlusion:u64=msg_send![win,occlusionState];
+            eprintln!("PERF native window visible={visible} occlusion={occlusion}");
+            return json!({"visible":visible,"occlusion_state":occlusion});
+        }}
+        json!(null)
+    }).unwrap();
+    report["native_window"]=native_state;
+    std::fs::write(&output,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    let watchdog_output=output.clone();
+    cx.spawn(async move|cx|{
+        Timer::after(std::time::Duration::from_secs(60)).await;
+        let _=cx.update(|cx|{
+            if let Ok(bytes)=std::fs::read(&watchdog_output){
+                if let Ok(mut report)=serde_json::from_slice::<serde_json::Value>(&bytes){
+                    report["cadence_error"]=json!("Display-link run did not finish within 60 seconds; check desktop visibility and occlusion. CPU scene samples remain valid.");
+                    let _=std::fs::write(&watchdog_output,serde_json::to_vec_pretty(&report).unwrap());
+                }
+            }
+            eprintln!("PERF cadence timeout; CPU report saved");cx.quit();
+        });
+    }).detach();
+    type CadenceState=(Vec<f64>,Instant,usize,usize,f64);
+    let state=Rc::new(RefCell::new((Vec::<f64>::new(),Instant::now(),0usize,0usize,0.)));
+    fn cadence(w:&mut Window,panel:Entity<Panel>,ids:Vec<String>,state:Rc<RefCell<CadenceState>>,mut report:serde_json::Value,output:String){
+        w.refresh();
+        w.on_next_frame(move|w,cx|{
+            let done={let mut s=state.borrow_mut();let now=Instant::now();let elapsed=crate::performance::ms(s.1);s.1=now;s.2+=1;let warmup=30;let samples=180;if s.2==warmup{s.4=crate::performance::media_time();}if s.2>warmup{s.0.push(elapsed);}s.2>=warmup+samples};
+            if done {
+                let phase=state.borrow().3;eprintln!("PERF cadence phase {phase} complete");let samples=state.borrow().0.clone();let mean=samples.iter().sum::<f64>()/samples.len()as f64;
+                if report["display_link"].is_null(){report["display_link"]=json!([]);}
+                report["display_link"].as_array_mut().unwrap().push(json!({"case":if phase>=4{"code-5000-lines"}else if phase%2==0{"blocks-200"}else{"blocks-8000"},"mode":if phase==5{"typing"}else if phase<2||phase==4{"scroll"}else{"hover"},"presented":crate::performance::presented_stats(&format!("{output}.frames.jsonl"),state.borrow().4,crate::performance::media_time()),"frame_intervals":crate::performance::stats(samples),"effective_fps":1000./mean,"note":"GPUI display-link callback cadence before rendering; not a GPU timestamp"}));
+                std::fs::write(&output,serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+                if phase==5{eprintln!("PERF report {output}");w.remove_window();cx.quit();return;}
+                let next=phase+1;panel.update(cx,|p,cx|p.select(&ids[if next>=4{5}else if next%2==0{1}else{3}],w,cx));
+                *state.borrow_mut()=(Vec::new(),Instant::now(),0,next,0.);
+            }
+            let i=state.borrow().2;let phase=state.borrow().3;
+            if phase==5{crate::block_editor::benchmark_edit(&panel.read(cx).editor.clone(),w,cx);}else if phase<2||phase==4{let _=w.dispatch_event(PlatformInput::ScrollWheel(ScrollWheelEvent{position:point(px(800.),px(400.)),delta:ScrollDelta::Pixels(point(px(0.),px(if i%60<30{-30.}else{30.}))),touch_phase:TouchPhase::Moved,..Default::default()}),cx);}else{let _=w.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent{position:point(px(420.+(i%2)as f32*70.),px(240.+(i%4)as f32*45.)),..Default::default()}),cx);}
+            cadence(w,panel,ids,state,report,output);
+        });
+    }
+    cx.update_window(handle,|_,w,_|cadence(w,panel,ids,state,report,output)).unwrap();
 }

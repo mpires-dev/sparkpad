@@ -91,7 +91,7 @@ fn blocks(note: &crate::store::Note) -> Value {
         use crate::blocks::Kind;
         let kind=match &b.kind {Kind::Paragraph=>json!({"type":"paragraph"}),Kind::Heading(n)=>json!({"type":"heading","level":n}),
             Kind::Bullet=>json!({"type":"bullet"}),Kind::Number(n)=>json!({"type":"numbered","number":n}),Kind::Task(done)=>json!({"type":"task","checked":done}),
-            Kind::Quote=>json!({"type":"quote"}),Kind::Code(lang)=>json!({"type":"code","language":lang}),Kind::Divider=>json!({"type":"divider"}),Kind::Source=>json!({"type":"source"})};
+            Kind::Quote=>json!({"type":"quote"}),Kind::Code(lang)=>json!({"type":"code","language":lang}),Kind::Divider=>json!({"type":"divider"}),Kind::Image{url,title}=>json!({"type":"image","url":url,"title":title,"width_percent":crate::blocks::image_width(title.as_deref())}),Kind::Table=>json!({"type":"table"}),Kind::Source=>json!({"type":"source"})};
         json!({"index":index,"kind":kind,"text":b.text,"markdown":b.markdown()})
     }).collect();
     json!({"id":note.id,"revision":note.revision,"blocks":blocks})

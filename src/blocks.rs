@@ -27,6 +27,8 @@ pub enum Kind {
     Quote,
     Code(String),
     Divider,
+    Image { url: String, title: Option<String> },
+    Table,
     Source,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,7 +201,10 @@ impl Block {
             );
             return format!("{fence}{lang}\n{}\n{fence}", self.text);
         }
-        if self.kind == Kind::Source {
+        if let Kind::Image {url,title} = &self.kind {
+            return format!("![{}]({}{})",self.text.replace('\\',"\\\\").replace(']',"\\]"),url.replace(' ',"%20").replace(')',"%29"),title.as_ref().map(|t|format!(" \"{}\"",t.replace('\\',"\\\\").replace('\"',"\\\""))).unwrap_or_default());
+        }
+        if matches!(self.kind, Kind::Source | Kind::Table) {
             return self.text.clone();
         }
         if self.kind == Kind::Divider {
@@ -273,7 +278,8 @@ impl Document {
         caret
     }
     pub fn parse(source: &str) -> Self {
-        let root = markdown::to_mdast(source, &ParseOptions::gfm()).ok();
+        let mut root = markdown::to_mdast(source, &ParseOptions::gfm()).ok();
+        if let Some(root)=&mut root {resolve_references(root);}
         let mut nodes: Vec<(&Node, Kind)> = Vec::new();
         if let Some(children) = root.as_ref().and_then(Node::children) {
             for node in children {
@@ -302,6 +308,8 @@ impl Document {
                         node,
                         match node {
                             Node::Heading(h) => Kind::Heading(h.depth),
+                            Node::Paragraph(p) if p.children.len()==1 && matches!(p.children[0],Node::Image(_)) => {if let Node::Image(image)=&p.children[0] {Kind::Image {url:image.url.clone(),title:image.title.clone()}} else {unreachable!()}},
+                            Node::Table(_) => Kind::Table,
                             Node::Paragraph(_) => Kind::Paragraph,
                             Node::Blockquote(q)
                                 if q.children.len() == 1
@@ -323,7 +331,7 @@ impl Document {
             let Some(p) = node.position() else { continue };
             let start = p.start.offset;
             let stop = p.end.offset;
-            let kind = if kind != Kind::Source && unsupported_inline(node) {
+            let kind = if !matches!(kind,Kind::Source|Kind::Table|Kind::Image{..}) && unsupported_inline(node) {
                 Kind::Source
             } else {
                 kind
@@ -333,7 +341,8 @@ impl Document {
             block.original = Some(source[start..stop].into());
             match node {
                 Node::Code(c) => block.text = c.value.clone(),
-                _ if kind == Kind::Source => block.text = source[start..stop].into(),
+                _ if matches!(kind,Kind::Image{..}) => {if let Node::Paragraph(p)=node {if let Node::Image(image)=&p.children[0] {block.text=image.alt.clone();}}},
+                _ if matches!(kind,Kind::Source|Kind::Table) => block.text = source[start..stop].into(),
                 _ => inline(node, Marks::default(), &mut block),
             }
             if block.spans.is_empty() {
@@ -413,7 +422,7 @@ impl Document {
         let a = b.text[..range.start].chars().count();
         let z = b.text[..range.end].chars().count();
         let kind = match b.kind {
-            Kind::Heading(_) | Kind::Divider => Kind::Paragraph,
+            Kind::Heading(_) | Kind::Divider | Kind::Table | Kind::Image{..} => Kind::Paragraph,
             Kind::Task(_) => Kind::Task(false),
             Kind::Number(n) => Kind::Number(n + 1),
             _ => b.kind.clone(),
@@ -431,8 +440,8 @@ impl Document {
         if index == 0 || index >= self.blocks.len() {
             return None;
         }
-        if matches!(self.blocks[index].kind, Kind::Source | Kind::Divider)
-            || matches!(self.blocks[index - 1].kind, Kind::Source | Kind::Divider)
+        if matches!(self.blocks[index].kind, Kind::Source | Kind::Table | Kind::Image{..} | Kind::Divider)
+            || matches!(self.blocks[index - 1].kind, Kind::Source | Kind::Table | Kind::Image{..} | Kind::Divider)
         {
             return None;
         }
@@ -597,6 +606,16 @@ fn unsupported_inline(node: &Node) -> bool {
         || node
             .children()
             .is_some_and(|children| children.iter().any(unsupported_inline))
+}
+pub fn table_cell(node: &Node, raw: &str) -> Block {
+    let mut block=Block::new(Kind::Paragraph,String::new());
+    fn breaks(node:&mut Node){
+        if matches!(node,Node::Html(h) if matches!(h.value.to_lowercase().as_str(),"<br>"|"<br/>"|"<br />")){*node=Node::Break(markdown::mdast::Break{position:node.position().cloned()});}
+        if let Some(children)=node.children_mut(){for child in children {breaks(child);}}
+    }
+    let mut node=node.clone();breaks(&mut node);inline(&node,Marks::default(),&mut block);
+    block.original=Some(raw.into());
+    block
 }
 fn inline(node: &Node, mut marks: Marks, block: &mut Block) {
     let value = match node {
@@ -779,7 +798,9 @@ mod tests {
             d.markdown(),
             source.replacen("Abertura", "Nova abertura", 1)
         );
-        assert!(d.blocks.iter().skip(1).all(|b| b.kind == Kind::Source));
+        assert_eq!(d.blocks[1].kind,Kind::Table);
+        assert!(matches!(d.blocks[2].kind,Kind::Image{..}));
+        assert_eq!(d.blocks[3].kind,Kind::Source);
     }
     #[test]
     fn nested_marks_round_trip() {
@@ -816,5 +837,39 @@ mod tests {
         d.remove(0);
         assert_eq!(d.blocks.len(), 1);
         assert_eq!(d.markdown(), "");
+    }
+}
+
+/// Width stays portable in a standard Markdown image title.
+pub fn image_width(title:Option<&str>)->u16 {title.unwrap_or("").split_whitespace().find_map(|s|s.strip_prefix("sparkpad-width=")?.parse::<u16>().ok()).unwrap_or(100).clamp(10,100)}
+pub fn resized_image_title(title:Option<&str>,width:u16)->Option<String>{let mut tokens:Vec<_>=title.unwrap_or("").split_whitespace().filter(|s|!s.starts_with("sparkpad-width=")).map(str::to_owned).collect();tokens.push(format!("sparkpad-width={}",width.clamp(10,100)));Some(tokens.join(" "))}
+
+fn resolve_references(root:&mut Node){
+    use std::collections::HashMap;
+    fn collect(node:&Node,defs:&mut HashMap<String,(String,Option<String>)>){if let Node::Definition(d)=node {defs.entry(d.identifier.to_lowercase()).or_insert((d.url.clone(),d.title.clone()));}if let Some(children)=node.children(){for child in children{collect(child,defs);}}}
+    fn resolve(node:&mut Node,defs:&HashMap<String,(String,Option<String>)>){
+        match node {
+            Node::ImageReference(r)=>if let Some((url,title))=defs.get(&r.identifier.to_lowercase()) {*node=Node::Image(markdown::mdast::Image{position:r.position.clone(),alt:r.alt.clone(),url:url.clone(),title:title.clone()});},
+            Node::LinkReference(r)=>if let Some((url,title))=defs.get(&r.identifier.to_lowercase()) {*node=Node::Link(markdown::mdast::Link{position:r.position.clone(),children:r.children.clone(),url:url.clone(),title:title.clone()});},_=>{}
+        }
+        if let Some(children)=node.children_mut(){for child in children{resolve(child,defs);}}
+    }
+    let mut defs=HashMap::new();collect(root,&mut defs);resolve(root,&defs);
+}
+
+#[cfg(test)]mod media_tests{
+    use super::*;
+    #[test]fn images_tables_and_references_round_trip(){
+        let source="Before\n\n![Alt](https://example.com/image.png \"Caption sparkpad-width=50\")\n\n| Name | Value |\n| :--- | ---: |\n| **Bold** | `a\\|b` |\n\n[Docs][ref]\n\n![Logo][img]\n\n[ref]: https://example.com/docs\n[img]: https://example.com/logo.svg\n";
+        let doc=Document::parse(source);assert_eq!(doc.markdown(),source);
+        assert!(doc.blocks.iter().any(|b|b.kind==Kind::Table));
+        let images:Vec<_>=doc.blocks.iter().filter(|b|matches!(b.kind,Kind::Image{..})).collect();assert_eq!(images.len(),2);
+        let mut image=images[0].clone();if let Kind::Image{title,..}=&mut image.kind{*title=resized_image_title(title.as_deref(),75);}image.invalidate();
+        let reparsed=Document::parse(&image.markdown());if let Kind::Image{title,..}=&reparsed.blocks[0].kind {assert_eq!(image_width(title.as_deref()),75);assert!(title.as_ref().unwrap().contains("Caption"));}else{panic!("image lost");}
+        assert!(doc.blocks.iter().any(|b|b.spans.iter().any(|s|s.marks.link.as_deref()==Some("https://example.com/docs"))));
+    }
+    #[test]fn commonmark_and_gfm_blocks_preserve_source(){
+        let fixtures=["# One\n## Two\n### Three\n#### Four\n##### Five\n###### Six","Setext\n======","- Parent\n  - Child\n  - [x] Nested task","1. First\n2. Second","> Quote\n>\n> - Nested", "~~~tsx\nconst Demo = () => <div />;\n~~~", "    indented code", "---", "~~deleted~~ **bold** *italic* `inline` <https://example.com>","line  \nbreak","<details>\n<summary>Title</summary>\nBody\n</details>"];
+        for source in fixtures {assert_eq!(Document::parse(source).markdown(),source,"lost Markdown: {source}");}
     }
 }
