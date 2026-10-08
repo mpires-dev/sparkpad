@@ -1,0 +1,19 @@
+{
+  "name": "@sparkpad/sync-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.16",
+    "lib0": "^0.2.119",
+    "marked": "^18.1.0",
+    "y-indexeddb": "^9.0.12",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

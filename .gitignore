@@ -15,3 +15,9 @@
 *.assets/
 
 /node_modules/
+
+*.sync.json
+*.sync.lock
+/apps/sync-web/dist/
+/apps/sync-web/node_modules/
+/sparkpad-data/
